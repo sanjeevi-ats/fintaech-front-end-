@@ -620,7 +620,7 @@ function SummaryRow({
   );
 }
 
-function formatAmount(amount: number): string {
+export function formatAmount(amount: number): string {
   return (amount / 100).toLocaleString('en-IN', {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0

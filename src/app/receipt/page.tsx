@@ -234,20 +234,20 @@ export default function QuickReceiptPage() {
         setReceiptData(receipt);
         
         // Prepare professional receipt data
-        const totalPaidBefore = found.installments?.filter(inst => inst.status === 'paid' && !selectedInstNos.includes(inst.id))
+        const totalPaidBefore = found!.installments?.filter(inst => inst.status === 'paid' && !selectedInstNos.includes(inst.id))
           .reduce((sum, inst) => sum + inst.amount, 0) || 0;
         
         const professionalData: ReceiptData = {
           receiptNumber: receipt?.receiptNumber || `RCP${Date.now().toString().slice(-6)}`,
           receiptDate: new Date().toISOString(),
-          customerName: found.customerName,
-          customerCode: found.customer?.code || found.customerCode || 'N/A',
-          loanCode: found.loanCode || 'N/A',
-          loanAmount: found.totalReceivable || found.principal,
+          customerName: found!.customerName || 'N/A',
+          customerCode: found!.customer?.code || found!.customerCode || 'N/A',
+          loanCode: found!.loanCode || 'N/A',
+          loanAmount: found!.totalReceivable || found!.principal || 0,
           paidBefore: totalPaidBefore,
           todaysPayment: totalPayable,
           totalPaid: totalPaidBefore + totalPayable,
-          outstanding: (found.totalReceivable || found.principal) - (totalPaidBefore + totalPayable),
+          outstanding: (found!.totalReceivable || found!.principal || 0) - (totalPaidBefore + totalPayable),
           paymentMode: mode,
           utrRef: utr || undefined,
           remarks: receiptRequest.remarks,
@@ -277,20 +277,20 @@ export default function QuickReceiptPage() {
         });
         
         // Still show professional receipt with fallback data
-        const totalPaidBefore = found.installments?.filter(inst => inst.status === 'paid' && !selectedInstNos.includes(inst.id))
+        const totalPaidBefore = found!.installments?.filter(inst => inst.status === 'paid' && !selectedInstNos.includes(inst.id))
           .reduce((sum, inst) => sum + inst.amount, 0) || 0;
         
         const professionalData: ReceiptData = {
           receiptNumber: `RCP${Date.now().toString().slice(-6)}`,
           receiptDate: new Date().toISOString(),
-          customerName: found.customerName,
-          customerCode: found.customer?.code || found.customerCode || 'N/A',
-          loanCode: found.loanCode || 'N/A',
-          loanAmount: found.totalReceivable || found.principal,
+          customerName: found!.customerName || 'N/A',
+          customerCode: found!.customer?.code || found!.customerCode || 'N/A',
+          loanCode: found!.loanCode || 'N/A',
+          loanAmount: found!.totalReceivable || found!.principal || 0,
           paidBefore: totalPaidBefore,
           todaysPayment: totalPayable,
           totalPaid: totalPaidBefore + totalPayable,
-          outstanding: (found.totalReceivable || found.principal) - (totalPaidBefore + totalPayable),
+          outstanding: (found!.totalReceivable || found!.principal || 0) - (totalPaidBefore + totalPayable),
           paymentMode: mode,
           utrRef: utr || undefined,
           remarks: receiptRequest.remarks,
