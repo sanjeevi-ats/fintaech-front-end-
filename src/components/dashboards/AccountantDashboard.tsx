@@ -1,9 +1,12 @@
 'use client';
-import React from 'react';
+import React, { useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { CheckCircle2, Clock, AlertTriangle, XCircle } from 'lucide-react';
+import { CheckCircle2, Clock, AlertTriangle, XCircle, DollarSign, TrendingUp, Activity, BarChart as BarChartIcon } from 'lucide-react';
 import { formatNumber } from '@/lib/utils';
 import { mockJournalEntries, mockChartOfAccounts } from '@/lib/mockData';
+import DashboardSummaryCard from '@/components/DashboardSummaryCard';
+import AnalyticsReport from '@/components/AnalyticsReport';
+import { reportPeriods, formatReportCurrency, CategorizedData } from '@/lib/reportUtils';
 
 const trialBalanceData = [
   { account: 'Assets', debit: 91625000, credit: 0 },
@@ -23,6 +26,12 @@ export default function AccountantDashboard() {
   const systemCash = 285000;
   const physicalCash = 281500;
   const discrepancy = systemCash - physicalCash;
+  const [selectedPeriod, setSelectedPeriod] = useState(reportPeriods.thisMonth());
+  const [reportData] = useState<CategorizedData[]>([
+    { category: 'Interest Income', value: 12400000, percentage: 55 },
+    { category: 'Operating Expenses', value: 8100000, percentage: 36 },
+    { category: 'Other Income', value: 1400000, percentage: 9 },
+  ]);
 
   return (
     <div className="fade-in-up">
@@ -119,6 +128,75 @@ export default function AccountantDashboard() {
             ))}
           </tbody>
         </table>
+      </div>
+
+      {/* PHASE 10: Financial Analytics */}
+      <div style={{ marginTop: 24, marginBottom: 20 }}>
+        <div style={{ marginBottom: 16 }}>
+          <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>
+            📊 Financial Analytics
+          </h2>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            Real-time financial performance and metrics
+          </p>
+        </div>
+
+        {/* Summary Cards */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 20 }}>
+          <DashboardSummaryCard
+            title="Total Revenue"
+            value={formatReportCurrency(12400000)}
+            subtitle="Interest + Other income"
+            trend={{ value: 12400000, percentage: 8, direction: 'up' }}
+            icon={<DollarSign size={20} />}
+            color="primary"
+          />
+          <DashboardSummaryCard
+            title="Operating Expenses"
+            value={formatReportCurrency(8100000)}
+            subtitle="March running costs"
+            trend={{ value: 8100000, percentage: 2, direction: 'up' }}
+            icon={<Activity size={20} />}
+            color="warning"
+          />
+          <DashboardSummaryCard
+            title="Net Profit"
+            value={formatReportCurrency(4300000)}
+            subtitle="Revenue - Expenses"
+            trend={{ value: 4300000, percentage: 15, direction: 'up' }}
+            icon={<TrendingUp size={20} />}
+            color="success"
+          />
+          <DashboardSummaryCard
+            title="Profit Margin"
+            value="34.7%"
+            subtitle="Net profit / Revenue"
+            trend={{ value: 34.7, percentage: 6, direction: 'up' }}
+            icon={<BarChartIcon size={20} />}
+            color="info"
+          />
+        </div>
+
+        {/* Financial Distribution Report */}
+        <AnalyticsReport
+          title="Income & Expense Distribution"
+          data={reportData}
+          selectedPeriod={selectedPeriod}
+          onPeriodChange={setSelectedPeriod}
+          onExport={(data) => {
+            const csv = [
+              ['Category', 'Value', 'Percentage'],
+              ...data.map(d => [d.category, d.value, d.percentage])
+            ].map(row => row.join(',')).join('\n');
+            
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `financial-report-${new Date().toISOString().split('T')[0]}.csv`;
+            a.click();
+          }}
+        />
       </div>
     </div>
   );

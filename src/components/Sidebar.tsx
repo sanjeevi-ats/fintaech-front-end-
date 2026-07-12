@@ -1,5 +1,5 @@
 'use client';
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
@@ -7,10 +7,11 @@ import {
   TrendingUp, BookOpen, Shield, Settings, ChevronDown,
   Building2, Bell, Search, LogOut, ChevronRight, Menu, X,
   Landmark, Scale, UserCheck, Map, PieChart, AlertTriangle,
-  Receipt, ClipboardList, Wallet, ArrowRightLeft, Brain, Book
+  Receipt, ClipboardList, Wallet, ArrowRightLeft, Brain, Book, Briefcase
 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { ROLE_LABELS } from '@/lib/utils';
+import { companyService } from '@/services/companyService';
 
 const navConfig: Record<string, any[]> = {
   super_admin: [
@@ -24,11 +25,17 @@ const navConfig: Record<string, any[]> = {
     { label: 'Loan Portfolio', icon: CreditCard, href: '/loans', children: [
       { label: 'All Loans', href: '/loans' },
       { label: 'Applications', href: '/loans/applications' },
-      { label: 'Products', href: '/loans/products' },
+      { label: 'Loan Approvals', href: '/loan-approvals' },
+      { label: 'Loan Masters', href: '/loans/products' },
+      { label: 'Asset Details', href: '/assets' },
     ]},
-    { label: 'Collections', icon: ClipboardList, href: '/collections' },
+    { label: 'Collections', icon: ClipboardList, href: '/collections', children: [
+      { label: 'Overview', href: '/collections' },
+      { label: 'Approvals', href: '/collection-approvals' },
+    ]},
     { label: 'Collection Entry Sheet', icon: FileText, href: '/collection-entry' },
-    { label: 'Quick Receipt', icon: Receipt, href: '/receipt' },
+    { label: 'Quick Pay & Receipts', icon: Receipt, href: '/quick-pay' },
+    { label: 'Capital Accounts', icon: Wallet, href: '/capital-accounts' },
     { label: 'General Ledger', icon: Scale, href: '/ledger' },
     { label: 'Accounting', icon: BookOpen, href: '/accounting', children: [
       { label: 'Journal Entries', href: '/accounting/journal' },
@@ -37,8 +44,11 @@ const navConfig: Record<string, any[]> = {
     { label: 'Address Book', icon: Book, href: '/addressbook' },
     { label: 'Reports', icon: PieChart, href: '/reports' },
     { label: 'Audit Logs', icon: Shield, href: '/audit' },
-    { label: 'RBAC / Users', icon: UserCheck, href: '/rbac' },
-    { label: 'Settings', icon: Settings, href: '/settings' },
+    { label: 'Employees', icon: UserCheck, href: '/rbac' },
+    { label: 'Settings', icon: Settings, href: '/settings', children: [
+      { label: 'General', href: '/settings' },
+      { label: 'Company', href: '/settings/company' },
+    ]},
   ],
   partner: [
     { label: 'Dashboard', icon: LayoutDashboard, href: '/' },
@@ -52,17 +62,25 @@ const navConfig: Record<string, any[]> = {
     { label: 'Loan Portfolio', icon: CreditCard, href: '/loans', children: [
       { label: 'All Loans', href: '/loans' },
       { label: 'Applications', href: '/loans/applications' },
+      { label: 'Loan Approvals', href: '/loan-approvals' },
+      { label: 'Asset Details', href: '/assets' },
     ]},
-    { label: 'Quick Receipt', icon: Receipt, href: '/receipt' },
+    { label: 'Quick Pay & Receipts', icon: Receipt, href: '/quick-pay' },
     { label: 'Collection Entry Sheet', icon: FileText, href: '/collection-entry' },
-    { label: 'Collections', icon: ClipboardList, href: '/collections' },
+    { label: 'Collections', icon: ClipboardList, href: '/collections', children: [
+      { label: 'Overview', href: '/collections' },
+      { label: 'Approvals', href: '/collection-approvals' },
+    ]},
     { label: 'General Ledger', icon: Scale, href: '/ledger' },
+    { label: 'Capital Accounts', icon: Wallet, href: '/capital-accounts' },
     { label: 'Accounting', icon: BookOpen, href: '/accounting', children: [
       { label: 'Journal Entries', href: '/accounting/journal' },
       { label: 'Day-End Close', href: '/accounting/dayend' },
     ]},
     { label: 'Address Book', icon: Book, href: '/addressbook' },
     { label: 'Audit Logs', icon: Shield, href: '/audit' },
+    { label: 'Employees', icon: UserCheck, href: '/rbac' },
+    { label: 'Company Settings', icon: Settings, href: '/settings/company' },
   ],
   accountant: [
     { label: 'Dashboard', icon: LayoutDashboard, href: '/' },
@@ -73,9 +91,12 @@ const navConfig: Record<string, any[]> = {
   ],
   collection_officer: [
     { label: 'Dashboard', icon: LayoutDashboard, href: '/' },
-    { label: 'Quick Receipt', icon: Receipt, href: '/receipt' },
+    { label: 'Quick Pay & Receipts', icon: Receipt, href: '/quick-pay' },
     { label: 'Collection Entry Sheet', icon: FileText, href: '/collection-entry' },
-    { label: 'Collections', icon: ClipboardList, href: '/collections' },
+    { label: 'Collections', icon: ClipboardList, href: '/collections', children: [
+      { label: 'Overview', href: '/collections' },
+      { label: 'Approvals', href: '/collection-approvals' },
+    ]},
     { label: 'My Loans', icon: CreditCard, href: '/loans' },
   ],
   recovery_specialist: [
@@ -87,7 +108,8 @@ const navConfig: Record<string, any[]> = {
     { label: '+ New Case', icon: FileText, href: '/cases/new' },
     { label: 'Applications', icon: FileText, href: '/loans/applications' },
     { label: 'Loan Portfolio', icon: CreditCard, href: '/loans' },
-    { label: 'Products', icon: Brain, href: '/loans/products' },
+    { label: 'Loan Masters', icon: Brain, href: '/loans/products' },
+    { label: 'Asset Details', icon: Briefcase, href: '/assets' },
     { label: 'Address Book', icon: Book, href: '/addressbook' },
   ],
 };
@@ -136,6 +158,22 @@ function NavItem({ item, collapsed }: { item: NavItemType; collapsed: boolean })
 export default function Sidebar() {
   const { user } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
+  const [companySettings, setCompanySettings] = useState<any>(null);
+
+  useEffect(() => {
+    const fetchCompany = async () => {
+      try {
+        const res = await companyService.get();
+        if (res && res.companyName) {
+          setCompanySettings(res);
+        }
+      } catch (err) {
+        console.error('Failed to load company settings in Sidebar', err);
+      }
+    };
+    fetchCompany();
+  }, []);
+
   if (!user) return null;
   const items = navConfig[user.role] || navConfig.super_admin;
 
@@ -152,13 +190,25 @@ export default function Sidebar() {
     }}>
       {/* Logo */}
       <div style={{ padding: '20px 14px', borderBottom: '1px solid var(--bg-border)', display: 'flex', alignItems: 'center', gap: 10 }}>
-        <div style={{ width: 32, height: 32, borderRadius: 8, background: 'var(--grad-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-          <Landmark size={16} color="white" />
+        <div style={{ width: 32, height: 32, borderRadius: 8, background: 'var(--grad-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, overflow: 'hidden' }}>
+          {companySettings?.logoBase64 ? (
+            <img 
+              src={`data:${companySettings.logoMimeType || 'image/png'};base64,${companySettings.logoBase64}`} 
+              alt="Logo" 
+              style={{ width: '100%', height: '100%', objectFit: 'cover' }} 
+            />
+          ) : (
+            <Landmark size={16} color="white" />
+          )}
         </div>
         {!collapsed && (
           <div>
-            <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.3px' }}>MicroFin</div>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 500 }}>SaaS Platform</div>
+            <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.3px' }}>
+              {companySettings?.companyName || 'MicroFin'}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 500 }}>
+              {companySettings?.tagline || 'SaaS Platform'}
+            </div>
           </div>
         )}
         <button onClick={() => setCollapsed(!collapsed)} className="btn btn-secondary btn-icon" style={{ marginLeft: 'auto', padding: 5 }}>

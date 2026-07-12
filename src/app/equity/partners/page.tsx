@@ -3,15 +3,21 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Plus, ArrowDownCircle, Percent, Info, Loader2, AlertCircle } from 'lucide-react';
 import { formatNumber } from '@/lib/utils';
 import { partnerService, Partner, PartnerCapitalSummary } from '@/services/partnerService';
+import CodeSearchBar from '@/components/CodeSearchBar';
+import { useAuth } from '@/context/AuthContext';
 
 export default function EquityPartnersPage() {
+  const { user } = useAuth();
   const [partners, setPartners] = useState<Partner[]>([]);
+  const [search, setSearch] = useState('');
   const [summaries, setSummaries] = useState<Record<string, PartnerCapitalSummary>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showInfuse, setShowInfuse] = useState(false);
   const [showDrawdown, setShowDrawdown] = useState(false);
-  const [form, setForm] = useState({ partnerId: '', amount: '' });
+  const [form, setForm] = useState({ partnerId: '', amount: '', paymentMode: 'cash', remarks: '' });
+
+  const isAdmin = user?.role === 'super_admin' || user?.role === 'branch_manager';
 
   const fetchData = useCallback(async () => {
     try {
@@ -48,12 +54,15 @@ export default function EquityPartnersPage() {
       setLoading(true);
       await partnerService.addInvestment({ 
         partnerId: form.partnerId, 
-        amount: parseFloat(form.amount) * 100 
+        amount: parseFloat(form.amount) * 100,
+        paymentMode: form.paymentMode,
+        remarks: form.remarks
       });
       setShowInfuse(false);
+      setForm({ partnerId: '', amount: '', paymentMode: 'cash', remarks: '' });
       fetchData();
     } catch (err: any) {
-      alert('Error infusing capital: ' + err.message);
+      alert('Error infusing capital: ' + (err.response?.data?.message || err.message));
     } finally {
       setLoading(false);
     }
@@ -65,16 +74,28 @@ export default function EquityPartnersPage() {
       setLoading(true);
       await partnerService.recordWithdrawal({ 
         partnerId: form.partnerId, 
-        amount: parseFloat(form.amount) * 100 
+        amount: parseFloat(form.amount) * 100,
+        paymentMode: form.paymentMode,
+        remarks: form.remarks
       });
       setShowDrawdown(false);
+      setForm({ partnerId: '', amount: '', paymentMode: 'cash', remarks: '' });
       fetchData();
     } catch (err: any) {
-      alert('Error recording drawdown: ' + err.message);
+      alert('Error recording drawdown: ' + (err.response?.data?.message || err.message));
     } finally {
       setLoading(false);
     }
   };
+
+  const filteredPartners = search.trim() === '' 
+    ? partners 
+    : partners.filter(p => {
+        const s = search.toLowerCase();
+        return p.name.toLowerCase().includes(s) || 
+               (p.code && p.code.toLowerCase().includes(s)) ||
+               p.email.toLowerCase().includes(s);
+      });
 
   if (loading && partners.length === 0) {
     return (
@@ -106,11 +127,21 @@ export default function EquityPartnersPage() {
         </div>
       )}
 
+      {/* Search Bar */}
+      <div style={{ marginBottom: 20 }}>
+        <CodeSearchBar
+          onSearch={setSearch}
+          entityType="partner"
+          placeholder="Search by partner code (PAR0001), name, or email..."
+          showHistory={true}
+        />
+      </div>
+
       {/* Equity summary */}
       <div style={{ display: 'flex', gap: 16, marginBottom: 20 }}>
         {[
           { label: 'Total Capital Pool', val: `₹${formatNumber(totalCapital)}`, color: '#6366f1' },
-          { label: 'Partners', val: partners.length, color: '#10b981' },
+          { label: 'Partners', val: filteredPartners.length, color: '#10b981' },
           { label: 'Total Profit Distributed', val: `₹${formatNumber(Object.values(summaries).reduce((s, p) => s + p.totalProfit / 100, 0))}`, color: '#f59e0b' },
           { label: 'System Date', val: new Date().toLocaleDateString(), color: '#8b5cf6' },
         ].map((item, i) => (
@@ -131,14 +162,15 @@ export default function EquityPartnersPage() {
         <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>Partner Ownership Breakdown</div>
         <table className="data-table">
           <thead>
-            <tr><th>Partner Name</th><th>Total Investment</th><th>Current Balance</th><th>Ownership %</th><th>Status</th></tr>
+            <tr><th>Partner Code</th><th>Partner Name</th><th>Total Investment</th><th>Current Balance</th><th>Ownership %</th><th>Status</th></tr>
           </thead>
           <tbody>
-            {partners.map(p => {
+            {filteredPartners.map(p => {
               const summary = summaries[p.id];
               const ownership = totalCapital > 0 ? ((summary?.currentBalance / 100) / totalCapital) * 100 : 0;
               return (
                 <tr key={p.id}>
+                  <td className="primary mono" style={{ fontWeight: 700, color: '#ec4899', fontSize: 12 }}>{p.code || 'N/A'}</td>
                   <td className="primary">
                     <div style={{ fontWeight: 600 }}>{p.name}</div>
                     <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{p.email}</div>
@@ -177,6 +209,18 @@ export default function EquityPartnersPage() {
               <div className="input-label">Amount (₹)</div>
               <input className="input" type="number" placeholder="e.g. 500000" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} />
             </div>
+            <div style={{ marginBottom: 12 }}>
+              <div className="input-label">Payment Mode</div>
+              <select className="select" style={{ width: '100%' }} value={form.paymentMode} onChange={e => setForm({ ...form, paymentMode: e.target.value })}>
+                <option value="cash">Cash</option>
+                <option value="upi">UPI</option>
+                <option value="bank_transfer">Bank Transfer</option>
+              </select>
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <div className="input-label">Remarks</div>
+              <input className="input" type="text" placeholder="Enter remarks" value={form.remarks} onChange={e => setForm({ ...form, remarks: e.target.value })} />
+            </div>
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 20 }}>
               <button className="btn btn-secondary" onClick={() => setShowInfuse(false)}>Cancel</button>
               <button className="btn btn-primary" onClick={handleInfuse} disabled={loading}>Confirm Infusion</button>
@@ -201,9 +245,28 @@ export default function EquityPartnersPage() {
               <div className="input-label">Amount (₹)</div>
               <input className="input" type="number" placeholder="e.g. 50000" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} />
             </div>
+            <div style={{ marginBottom: 12 }}>
+              <div className="input-label">Payment Mode</div>
+              <select className="select" style={{ width: '100%' }} value={form.paymentMode} onChange={e => setForm({ ...form, paymentMode: e.target.value })}>
+                <option value="cash">Cash</option>
+                <option value="upi">UPI</option>
+                <option value="bank_transfer">Bank Transfer</option>
+              </select>
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <div className="input-label">Remarks</div>
+              <input className="input" type="text" placeholder="Enter remarks" value={form.remarks} onChange={e => setForm({ ...form, remarks: e.target.value })} />
+            </div>
+            {!isAdmin && (
+              <div style={{ fontSize: 11, color: '#f59e0b', marginBottom: 12 }}>
+                ℹ️ You are logged in as {user?.role}. This will submit a withdrawal request for Admin approval.
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 20 }}>
               <button className="btn btn-secondary" onClick={() => setShowDrawdown(false)}>Cancel</button>
-              <button className="btn btn-danger" onClick={handleWithdraw} disabled={loading}>Confirm Drawdown</button>
+              <button className="btn btn-danger" onClick={handleWithdraw} disabled={loading}>
+                {isAdmin ? 'Confirm Drawdown' : 'Request Drawdown'}
+              </button>
             </div>
           </div>
         </div>

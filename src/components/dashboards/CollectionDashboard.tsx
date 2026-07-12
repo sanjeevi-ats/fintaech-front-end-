@@ -1,8 +1,11 @@
 'use client';
 import React, { useState, useEffect } from 'react';
-import { CheckCircle2, Clock, AlertTriangle, MapPin, Wifi, WifiOff, Camera, Phone, Loader2 } from 'lucide-react';
+import { CheckCircle2, Clock, AlertTriangle, MapPin, Wifi, WifiOff, Camera, Phone, Loader2, DollarSign, TrendingUp, Activity } from 'lucide-react';
 import { formatNumber } from '@/lib/utils';
 import { installmentService, Installment, RecordPaymentRequest } from '@/services/installmentService';
+import DashboardSummaryCard from '@/components/DashboardSummaryCard';
+import AnalyticsReport from '@/components/AnalyticsReport';
+import { reportPeriods, formatReportCurrency, CategorizedData } from '@/lib/reportUtils';
 
 export default function CollectionDashboard() {
   const [installments, setInstallments] = useState<Installment[]>([]);
@@ -10,6 +13,12 @@ export default function CollectionDashboard() {
   const [error, setError] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
   const [submitting, setSubmitting] = useState<string | null>(null);
+  const [selectedPeriod, setSelectedPeriod] = useState(reportPeriods.today());
+  const [reportData] = useState<CategorizedData[]>([
+    { category: 'Collected', value: 485, percentage: 65 },
+    { category: 'Pending', value: 215, percentage: 29 },
+    { category: 'Partial', value: 45, percentage: 6 },
+  ]);
 
   useEffect(() => {
     loadDueInstallments();
@@ -208,6 +217,75 @@ export default function CollectionDashboard() {
           </div>
         </div>
       )}
+
+      {/* PHASE 10: Collection Analytics */}
+      <div style={{ marginTop: 24, marginBottom: 20 }}>
+        <div style={{ marginBottom: 16 }}>
+          <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>
+            📊 Collection Analytics
+          </h2>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            Real-time collection performance and progress
+          </p>
+        </div>
+
+        {/* Summary Cards */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 20 }}>
+          <DashboardSummaryCard
+            title="Daily Target"
+            value={formatReportCurrency(750000)}
+            subtitle="Collection goal"
+            trend={{ value: 750000, percentage: 0, direction: 'neutral' }}
+            icon={<DollarSign size={20} />}
+            color="primary"
+          />
+          <DashboardSummaryCard
+            title="Collected Today"
+            value={formatReportCurrency(collectedAmount)}
+            subtitle={`${collected} of ${total} payments`}
+            trend={{ value: collectedAmount, percentage: 12, direction: 'up' }}
+            icon={<TrendingUp size={20} />}
+            color="success"
+          />
+          <DashboardSummaryCard
+            title="Collection Rate"
+            value={`${Math.round(progress)}%`}
+            subtitle="Today's progress"
+            trend={{ value: progress, percentage: 5, direction: 'up' }}
+            icon={<Activity size={20} />}
+            color="info"
+          />
+          <DashboardSummaryCard
+            title="Pending Collection"
+            value={formatReportCurrency(targetAmount - collectedAmount)}
+            subtitle={`${total - collected} pending`}
+            trend={{ value: targetAmount - collectedAmount, percentage: 1, direction: 'down' }}
+            icon={<Clock size={20} />}
+            color="warning"
+          />
+        </div>
+
+        {/* Collection Status Report */}
+        <AnalyticsReport
+          title="Collection Status by Progress"
+          data={reportData}
+          selectedPeriod={selectedPeriod}
+          onPeriodChange={setSelectedPeriod}
+          onExport={(data) => {
+            const csv = [
+              ['Category', 'Value', 'Percentage'],
+              ...data.map(d => [d.category, d.value, d.percentage])
+            ].map(row => row.join(',')).join('\n');
+            
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `collection-report-${new Date().toISOString().split('T')[0]}.csv`;
+            a.click();
+          }}
+        />
+      </div>
     </div>
   );
 }

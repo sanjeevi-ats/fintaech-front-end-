@@ -2,6 +2,7 @@ import { apiClient } from './apiClient';
 
 export interface Installment {
   id: string;
+  code?: string;  // Business code (INST0001, etc.) - NEW
   loanCaseId: string;
   branchId: string;
   no: number;
@@ -14,6 +15,7 @@ export interface Installment {
 
 export interface Receipt {
   id: string;
+  code?: string;  // Business code (RCP0001, etc.) - NEW
   installmentId: string;
   amountPaid: number;
   mode: 'cash' | 'upi' | 'bank_transfer';
@@ -43,6 +45,13 @@ export const installmentService = {
   getInstallmentsByLoan: (loanId: string) => 
     apiClient.get<Installment[]>(`/api/v1/Installments/loan/${loanId}`),
   
+  /**
+   * Get installment by business code (e.g., INST0001)
+   * NEW - Phase 4: Frontend UI Integration
+   */
+  getByCode: (code: string) =>
+    apiClient.get<Installment>(`/api/v1/installments/by-code/${encodeURIComponent(code)}`),
+  
   recordPayment: (payment: RecordPaymentRequest) => 
     apiClient.post<Receipt>('/api/v1/Collection/collect', payment),
   
@@ -52,6 +61,13 @@ export const installmentService = {
     const query = params.toString();
     return apiClient.get<Receipt[]>(`/api/v1/Receipts${query ? `?${query}` : ''}`);
   },
+  
+  /**
+   * Get receipt by business code (e.g., RCP0001)
+   * NEW - Phase 4: Frontend UI Integration
+   */
+  getReceiptByCode: (code: string) =>
+    apiClient.get<Receipt>(`/api/v1/receipts/by-code/${encodeURIComponent(code)}`),
   
   syncCollections: () => apiClient.post<{ message: string }>('/api/v1/Collection/sync', {}),
 };

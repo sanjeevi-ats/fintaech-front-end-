@@ -60,8 +60,8 @@ export const ROLE_LABELS: Record<UserRole, string> = {
 // ─── Storage helpers ─────────────────────────────────────────
 const SESSION_KEY = 'annaitech_session';
 const LOCK_KEY = 'annaitech_lockout';
-const MAX_ATTEMPTS = 5;
-const LOCK_DURATION_MS = 15 * 60 * 1000; // 15 minutes
+const MAX_ATTEMPTS = 999; // Disabled lockout - set to very high number
+const LOCK_DURATION_MS = 0; // No lockout duration
 
 function saveSession(user: AuthUser, rememberMe: boolean) {
   const payload = JSON.stringify({ user, ts: Date.now() });
@@ -80,6 +80,10 @@ function loadSession(): AuthUser | null {
     const raw = localStorage.getItem(SESSION_KEY) || sessionStorage.getItem(SESSION_KEY);
     if (!raw) return null;
     const { user, ts } = JSON.parse(raw);
+    
+    if (user && (user.role === 'admin' as any)) {
+      user.role = 'super_admin';
+    }
     
     // Simple JWT payload parser (part 2)
     const tokenParts = user.token.split('.');
@@ -112,20 +116,21 @@ function clearSession() {
 }
 
 function getLockState(): { locked: boolean; lockedUntil: number; attempts: number } {
-  try {
-    const raw = localStorage.getItem(LOCK_KEY);
-    if (!raw) return { locked: false, lockedUntil: 0, attempts: 0 };
-    return JSON.parse(raw);
-  } catch { return { locked: false, lockedUntil: 0, attempts: 0 }; }
+  // Always return unlocked state - lockout disabled
+  return { locked: false, lockedUntil: 0, attempts: 0 };
 }
 
 function setLockState(attempts: number) {
-  const locked = attempts >= MAX_ATTEMPTS;
-  const lockedUntil = locked ? Date.now() + LOCK_DURATION_MS : 0;
-  localStorage.setItem(LOCK_KEY, JSON.stringify({ locked, lockedUntil, attempts }));
+  // Lockout disabled - do nothing
+  return;
 }
 
-function clearLockState() { localStorage.removeItem(LOCK_KEY); }
+function clearLockState() { 
+  // Clear any old lockout data
+  if (typeof window !== 'undefined') {
+    localStorage.removeItem(LOCK_KEY); 
+  }
+}
 
 // ─── Context ─────────────────────────────────────────────────
 const AuthContext = createContext<AuthContextValue>({} as AuthContextValue);
@@ -177,11 +182,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         localStorage.setItem('token', response.token);
       }
 
+      let userRole = response.role.toLowerCase() as UserRole;
+      if (userRole === 'admin' as any) {
+        userRole = 'super_admin';
+      }
+
       const safeUser: AuthUser = {
         id: response.email, // Use email as ID for now
         name: response.name,
         email: response.email,
-        role: response.role.toLowerCase() as UserRole,
+        role: userRole,
         avatar: response.name.split(' ').map((n: string) => n[0]).join(''),
         mfaRequired: false, // Default to false unless API says otherwise
         token: response.token,

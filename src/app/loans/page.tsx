@@ -4,6 +4,12 @@ import { Search, Plus, Eye, Loader2, AlertCircle } from 'lucide-react';
 import { formatNumber, getStatusColor } from '@/lib/utils';
 import { loanService, LoanCase } from '@/services/loanService';
 import { customerService, Customer } from '@/services/customerService';
+import CodeSearchBar from '@/components/CodeSearchBar';
+import AdvancedFilterPanel from '@/components/AdvancedFilterPanel';
+import BulkActionsBar from '@/components/BulkActionsBar';
+import { fuzzySearchWithCodePriority, codeSearchConfig } from '@/lib/searchUtils';
+import { applyFilters, StatusFilter, DateRangeFilter, AmountRangeFilter } from '@/lib/filterUtils';
+import { initializeSelection, toggleItemSelection, toggleAllSelection, clearSelection, SelectionState, exportToCSV } from '@/lib/bulkOperationsUtils';
 
 export default function LoansPage() {
   const [search, setSearch] = useState('');
@@ -13,6 +19,12 @@ export default function LoansPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedLoan, setSelectedLoan] = useState<LoanCase | null>(null);
+  const [advancedFilters, setAdvancedFilters] = useState<{
+    status?: StatusFilter;
+    dateRange?: DateRangeFilter;
+    amountRange?: AmountRangeFilter;
+  }>({});
+  const [selection, setSelection] = useState<SelectionState>(initializeSelection(0));
 
   const fetchData = useCallback(async () => {
     try {
@@ -91,6 +103,7 @@ export default function LoansPage() {
       }
     } finally {
       setLoading(false);
+      setSelection(initializeSelection(loans.length));
     }
   }, []);
 
@@ -100,10 +113,43 @@ export default function LoansPage() {
 
   const filtered = loans.filter(l => {
     const customerName = l.customerName || customers[l.customerId]?.name || '';
-    const matchSearch = customerName.toLowerCase().includes(search.toLowerCase()) || 
-                       l.id.toLowerCase().includes(search.toLowerCase());
+    
+    if (!search.trim()) {
+      // No search - apply advanced filters only
+      const matchFilter = filter === 'all' || l.status === filter;
+      if (!matchFilter) return false;
+      
+      // Apply advanced filters
+      return applyFilters([l], {
+        status: advancedFilters.status,
+        dateRange: advancedFilters.dateRange,
+        amountRange: advancedFilters.amountRange,
+        dateField: 'createdAt',
+        amountField: 'totalReceivable',
+      }).length > 0;
+    }
+
+    // Use fuzzy search with code priority
+    const searchResults = fuzzySearchWithCodePriority(
+      [l],
+      search,
+      codeSearchConfig.loan
+    );
+
+    // Also apply status filter and advanced filters if search has results
+    const hasMatch = searchResults.length > 0;
     const matchFilter = filter === 'all' || l.status === filter;
-    return matchSearch && matchFilter;
+    
+    if (!hasMatch || !matchFilter) return false;
+    
+    // Apply advanced filters to search results
+    return applyFilters([l], {
+      status: advancedFilters.status,
+      dateRange: advancedFilters.dateRange,
+      amountRange: advancedFilters.amountRange,
+      dateField: 'createdAt',
+      amountField: 'totalReceivable',
+    }).length > 0;
   });
 
   if (loading) {
@@ -151,24 +197,72 @@ export default function LoansPage() {
       </div>
 
       {/* Filters */}
-      <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
-        <div style={{ position: 'relative', flex: 1, maxWidth: 320 }}>
-          <Search size={13} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-          <input className="input" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by name or loan ID..." style={{ paddingLeft: 30, height: 36 }} />
+      <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap', flexDirection: 'column' }}>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ flex: 1, minWidth: 300 }}>
+            <CodeSearchBar
+              onSearch={setSearch}
+              entityType="loan"
+              placeholder="Search by loan code (LN0001), customer code, name..."
+              showHistory={true}
+              autoFocus={false}
+            />
+          </div>
+          {['all', 'active', 'pending_disburse', 'closed'].map(f => (
+            <button key={f} className={`btn btn-sm ${filter === f ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setFilter(f)}>
+              {f === 'pending_disburse' ? 'Pending Disburse' : f.charAt(0).toUpperCase() + f.slice(1)}
+            </button>
+          ))}
         </div>
-        {['all', 'active', 'pending_disburse', 'closed'].map(f => (
-          <button key={f} className={`btn btn-sm ${filter === f ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setFilter(f)}>
-            {f === 'pending_disburse' ? 'Pending Disburse' : f.charAt(0).toUpperCase() + f.slice(1)}
-          </button>
-        ))}
+        <AdvancedFilterPanel
+          entityType="loan"
+          onFilterChange={setAdvancedFilters}
+          showDateFilter={true}
+          showAmountFilter={true}
+          dateField="createdAt"
+          amountField="totalReceivable"
+        />
       </div>
+
+      {/* Bulk Actions */}
+      <BulkActionsBar
+        selectionState={selection}
+        onClearSelection={() => setSelection(clearSelection(selection))}
+        onExport={async (ids) => {
+          const selectedLoans = loans.filter(l => ids.includes(l.id));
+          exportToCSV(
+            selectedLoans.map(l => ({
+              loanCode: l.loanCode,
+              customerCode: l.customerCode,
+              customerName: l.customerName,
+              principal: l.principal,
+              totalReceivable: l.totalReceivable,
+              status: l.status,
+              createdAt: l.createdAt,
+            })),
+            ['loanCode', 'customerCode', 'customerName', 'principal', 'totalReceivable', 'status', 'createdAt'],
+            `loans_export_${new Date().toISOString().split('T')[0]}`,
+            ['Loan Code', 'Customer Code', 'Customer', 'Principal', 'Total Receivable', 'Status', 'Created']
+          );
+        }}
+        showExportButton={true}
+      />
 
       {/* Table */}
       <div className="card" style={{ padding: 0 }}>
         <table className="data-table">
           <thead>
             <tr>
-              <th style={{ padding: '14px 16px' }}>Loan ID</th>
+              <th style={{ padding: '14px 16px', width: 40 }}>
+                <input
+                  type="checkbox"
+                  checked={selection.isAllSelected}
+                  onChange={() => setSelection(toggleAllSelection(selection, filtered.map(l => l.id)))}
+                  style={{ cursor: 'pointer' }}
+                />
+              </th>
+              <th style={{ padding: '14px 16px' }}>Loan Code</th>
+              <th>Customer Code</th>
               <th>Customer</th>
               <th>Principal</th>
               <th>Total Receivable</th>
@@ -183,8 +277,17 @@ export default function LoansPage() {
               const totalReceivable = (loan.totalReceivable || 0) / 100;
               
               return (
-                <tr key={loan.id}>
-                  <td className="primary mono" style={{ paddingLeft: 16 }}>{loan.id.slice(0, 8)}...</td>
+                <tr key={loan.id} style={{ background: selection.selectedIds.has(loan.id) ? 'rgba(99,102,241,0.07)' : '' }}>
+                  <td style={{ paddingLeft: 16 }}>
+                    <input
+                      type="checkbox"
+                      checked={selection.selectedIds.has(loan.id)}
+                      onChange={() => setSelection(toggleItemSelection(selection, loan.id))}
+                      style={{ cursor: 'pointer' }}
+                    />
+                  </td>
+                  <td className="primary mono" style={{ fontWeight: 700, color: '#6366f1' }}>{loan.loanCode || 'N/A'}</td>
+                  <td className="mono" style={{ fontWeight: 600, color: '#10b981' }}>{loan.customerCode || 'N/A'}</td>
                   <td>
                     <div style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: 13 }}>{customerName}</div>
                     {customers[loan.customerId]?.phone && (
@@ -201,7 +304,7 @@ export default function LoansPage() {
               );
             }) : (
               <tr>
-                <td colSpan={6} style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>No loans found matching your search.</td>
+                <td colSpan={8} style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>No loans found matching your search.</td>
               </tr>
             )}
           </tbody>
@@ -219,12 +322,16 @@ export default function LoansPage() {
             
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
               <div>
-                <div className="input-label">Loan ID</div>
-                <div style={{ padding: '8px 12px', background: 'var(--bg-elevated)', borderRadius: 6, fontFamily: 'monospace', fontSize: 12 }}>{selectedLoan.id}</div>
+                <div className="input-label">Loan Code</div>
+                <div style={{ padding: '8px 12px', background: 'var(--bg-elevated)', borderRadius: 6, fontFamily: 'monospace', fontSize: 12, fontWeight: 700, color: '#6366f1' }}>{selectedLoan.loanCode || 'N/A'}</div>
               </div>
               <div>
                 <div className="input-label">Status</div>
                 <span className={`badge ${getStatusColor(selectedLoan.status)}`}>{selectedLoan.status}</span>
+              </div>
+              <div>
+                <div className="input-label">Customer Code</div>
+                <div style={{ padding: '8px 12px', background: 'var(--bg-elevated)', borderRadius: 6, fontFamily: 'monospace', fontSize: 12, fontWeight: 700, color: '#10b981' }}>{selectedLoan.customerCode || 'N/A'}</div>
               </div>
               <div>
                 <div className="input-label">Customer Name</div>
@@ -232,10 +339,7 @@ export default function LoansPage() {
                   {selectedLoan.customerName || customers[selectedLoan.customerId]?.name || 'Loading...'}
                 </div>
               </div>
-              <div>
-                <div className="input-label">Customer ID</div>
-                <div style={{ padding: '8px 12px', background: 'var(--bg-elevated)', borderRadius: 6, fontFamily: 'monospace', fontSize: 12 }}>{selectedLoan.customerId}</div>
-              </div>
+
               <div>
                 <div className="input-label">Principal Amount</div>
                 <div style={{ padding: '8px 12px', background: 'var(--bg-elevated)', borderRadius: 6, fontWeight: 600, color: '#6366f1' }}>₹{((selectedLoan.principal || 0) / 100).toLocaleString()}</div>

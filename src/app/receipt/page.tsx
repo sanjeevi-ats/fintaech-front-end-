@@ -1,12 +1,18 @@
 'use client';
-import React, { useState } from 'react';
-import { Search, Receipt, Printer, Send, CheckCircle2, AlertTriangle, Loader2, Download, FileText, Clock, DollarSign, User } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Search, Receipt, Printer, CheckCircle2, AlertTriangle, Loader2, Download, FileText, DollarSign, User } from 'lucide-react';
 import { formatNumber } from '@/lib/utils';
 import { loanService, LoanCase } from '@/services/loanService';
 import { customerService, Customer } from '@/services/customerService';
 import { collectionService, Installment } from '@/services/collectionService';
 import { receiptService, ReceiptRequest } from '@/services/receiptService';
 import { receiptPdfService } from '@/services/receiptPdfService';
+import { companySettingsService, CompanySettings, BranchSettings } from '@/services/companySettingsService';
+import CodeSearchBar from '@/components/CodeSearchBar';
+import AdvancedFilterPanel from '@/components/AdvancedFilterPanel';
+import { fuzzySearchWithCodePriority, codeSearchConfig } from '@/lib/searchUtils';
+import { applyFilters, StatusFilter, DateRangeFilter, AmountRangeFilter } from '@/lib/filterUtils';
+import ProfessionalReceipt, { ReceiptData } from '@/components/ProfessionalReceipt';
 
 interface LoanWithInstallments extends LoanCase {
   installments?: Installment[];
@@ -23,6 +29,35 @@ export default function QuickReceiptPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [receiptData, setReceiptData] = useState<any>(null);
+  const [showProfessionalReceipt, setShowProfessionalReceipt] = useState(false);
+  const [professionalReceiptData, setProfessionalReceiptData] = useState<ReceiptData | null>(null);
+  const [advancedFilters, setAdvancedFilters] = useState<{
+    status?: StatusFilter;
+    dateRange?: DateRangeFilter;
+    amountRange?: AmountRangeFilter;
+  }>({});
+  
+  // Company and branch settings loaded from database
+  const [companySettings, setCompanySettings] = useState<CompanySettings | null>(null);
+  const [branchSettings, setBranchSettings] = useState<BranchSettings | null>(null);
+  
+  // Load settings on mount
+  useEffect(() => {
+    const loadSettings = async () => {
+      try {
+        const [company, branch] = await Promise.all([
+          companySettingsService.getCompanySettings(),
+          companySettingsService.getBranchSettings()
+        ]);
+        setCompanySettings(company);
+        setBranchSettings(branch);
+      } catch (err) {
+        console.error('Failed to load company/branch settings:', err);
+        // Don't set fallback - let components handle missing data
+      }
+    };
+    loadSettings();
+  }, []);
 
   const doSearch = async () => {
     if (!query.trim()) return;
@@ -72,17 +107,22 @@ export default function QuickReceiptPage() {
           // Try searching in all loans
           try {
             const allLoans = await loanService.getAll();
-            loanData = allLoans.find(loan => 
-              loan.id.toLowerCase().includes(q) ||
-              (loan.customerName && loan.customerName.toLowerCase().includes(q))
-            ) || null;
+            // Use fuzzy search with code priority for better search
+            const searchResults = fuzzySearchWithCodePriority(
+              allLoans,
+              q,
+              codeSearchConfig.loan
+            );
+            loanData = searchResults.length > 0 ? searchResults[0].item : null;
           } catch (allLoansErr) {
             console.warn('All loans search failed, trying alternative endpoint:', allLoansErr);
             const allLoansAlt = await loanService.getAllAlt();
-            loanData = allLoansAlt.find(loan => 
-              loan.id.toLowerCase().includes(q) ||
-              (loan.customerName && loan.customerName.toLowerCase().includes(q))
-            ) || null;
+            const searchResults = fuzzySearchWithCodePriority(
+              allLoansAlt,
+              q,
+              codeSearchConfig.loan
+            );
+            loanData = searchResults.length > 0 ? searchResults[0].item : null;
           }
         }
       }
@@ -192,6 +232,41 @@ export default function QuickReceiptPage() {
       try {
         const receipt = await receiptService.createReceipt(receiptRequest);
         setReceiptData(receipt);
+        
+        // Prepare professional receipt data
+        const totalPaidBefore = found.installments?.filter(inst => inst.status === 'paid' && !selectedInstNos.includes(inst.id))
+          .reduce((sum, inst) => sum + inst.amount, 0) || 0;
+        
+        const professionalData: ReceiptData = {
+          receiptNumber: receipt?.receiptNumber || `RCP${Date.now().toString().slice(-6)}`,
+          receiptDate: new Date().toISOString(),
+          customerName: found.customerName,
+          customerCode: found.customer?.code || found.customerCode || 'N/A',
+          loanCode: found.loanCode || 'N/A',
+          loanAmount: found.totalReceivable || found.principal,
+          paidBefore: totalPaidBefore,
+          todaysPayment: totalPayable,
+          totalPaid: totalPaidBefore + totalPayable,
+          outstanding: (found.totalReceivable || found.principal) - (totalPaidBefore + totalPayable),
+          paymentMode: mode,
+          utrRef: utr || undefined,
+          remarks: receiptRequest.remarks,
+          companyName: 'FinVeda Microfinance Private Limited',
+          companyAddress: 'MG Road, Financial District, Mumbai - 400001, Maharashtra, India',
+          companyPhone: '+91 22 6789 1234',
+          companyEmail: 'support@finveda.com',
+          companyGST: '27AABCU9603R1ZM',
+          companyWebsite: 'www.finveda.com',
+          companyLicense: 'NBFC-MFI-001/2024',
+          branchName: 'Mumbai Main Branch',
+          branchCode: 'BR001',
+          branchAddress: 'Ground Floor, MG Road, Mumbai - 400001',
+          cashierName: 'System User',
+          terminalId: 'POS001'
+        };
+        
+        setProfessionalReceiptData(professionalData);
+        setShowProfessionalReceipt(true);
       } catch (receiptErr) {
         console.warn('Receipt creation failed, using fallback:', receiptErr);
         // Fallback receipt data
@@ -200,6 +275,41 @@ export default function QuickReceiptPage() {
           receiptNumber: `RCP-${Date.now().toString().slice(-6)}`,
           success: true
         });
+        
+        // Still show professional receipt with fallback data
+        const totalPaidBefore = found.installments?.filter(inst => inst.status === 'paid' && !selectedInstNos.includes(inst.id))
+          .reduce((sum, inst) => sum + inst.amount, 0) || 0;
+        
+        const professionalData: ReceiptData = {
+          receiptNumber: `RCP${Date.now().toString().slice(-6)}`,
+          receiptDate: new Date().toISOString(),
+          customerName: found.customerName,
+          customerCode: found.customer?.code || found.customerCode || 'N/A',
+          loanCode: found.loanCode || 'N/A',
+          loanAmount: found.totalReceivable || found.principal,
+          paidBefore: totalPaidBefore,
+          todaysPayment: totalPayable,
+          totalPaid: totalPaidBefore + totalPayable,
+          outstanding: (found.totalReceivable || found.principal) - (totalPaidBefore + totalPayable),
+          paymentMode: mode,
+          utrRef: utr || undefined,
+          remarks: receiptRequest.remarks,
+          companyName: companySettings?.fullName || 'Company Name Not Configured',
+          companyAddress: `${companySettings?.address || ''}, ${companySettings?.city || ''} - ${companySettings?.pinCode || ''}, ${companySettings?.state || ''}, ${companySettings?.country || ''}`,
+          companyPhone: companySettings?.phone || '',
+          companyEmail: companySettings?.email || '',
+          companyGST: companySettings?.gstNumber || '',
+          companyWebsite: companySettings?.website || '',
+          companyLicense: companySettings?.licenseNumber || '',
+          branchName: branchSettings?.name || 'Branch Not Configured',
+          branchCode: branchSettings?.code || '',
+          branchAddress: `${branchSettings?.address || ''}, ${branchSettings?.city || ''} - ${branchSettings?.pinCode || ''}`,
+          cashierName: 'System User',
+          terminalId: 'POS001'
+        };
+        
+        setProfessionalReceiptData(professionalData);
+        setShowProfessionalReceipt(true);
       }
 
       setPaid(true);
@@ -240,7 +350,7 @@ export default function QuickReceiptPage() {
       {/* Search Section */}
       <div className="card" style={{ padding: 16, marginBottom: 20 }}>
         <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12 }}>Search Customer or Loan</div>
-        <div style={{ display: 'flex', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 10, marginBottom: 12 }}>
           <div style={{ position: 'relative', flex: 1 }}>
             <Search size={14} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
             <input 
@@ -262,6 +372,15 @@ export default function QuickReceiptPage() {
             {loading ? 'Searching...' : 'Find'}
           </button>
         </div>
+        {found && (
+          <AdvancedFilterPanel
+            entityType="receipt"
+            onFilterChange={setAdvancedFilters}
+            showDateFilter={false}
+            showAmountFilter={true}
+            amountField="amount"
+          />
+        )}
       </div>
 
       {error && (
@@ -417,89 +536,19 @@ export default function QuickReceiptPage() {
       )}
 
       {/* Receipt */}
-      {paid && found && (
-        <div style={{ maxWidth: 520, margin: '0 auto' }}>
-          <div className="card">
-            <div style={{ textAlign: 'center', marginBottom: 20 }}>
-              <CheckCircle2 size={48} color="#34d399" style={{ margin: '0 auto' }} />
-              <div style={{ fontSize: 20, fontWeight: 800, color: '#34d399', marginTop: 12 }}>Payment Received!</div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>Receipt Generated • {new Date().toLocaleString('en-IN')}</div>
-            </div>
-
-            <div style={{ background: 'var(--bg-elevated)', padding: 16, borderRadius: 12, marginBottom: 16 }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
-                <div>
-                  <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>Receipt No</div>
-                  <div style={{ fontSize: 13, fontWeight: 700 }}>{receiptData?.receiptNumber || `RCP-${Date.now().toString().slice(-6)}`}</div>
-                </div>
-                <div>
-                  <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>Amount</div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: '#34d399' }}>₹{(totalPayable / 100).toLocaleString()}</div>
-                </div>
-              </div>
-
-              <div style={{ borderTop: '1px solid var(--bg-border)', paddingTop: 12 }}>
-                {[
-                  ['Customer', found.customerName],
-                  ['Loan ID', found.id.slice(0, 12) + '...'],
-                  ['Installments', selectedInstallments.map(inst => `#${inst.no}`).join(', ')],
-                  ['Payment Mode', mode.toUpperCase()],
-                  ...(utr ? [['UTR Reference', utr]] : []),
-                ].map(([label, value]) => (
-                  <div key={label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 8 }}>
-                    <span style={{ color: 'var(--text-muted)' }}>{label}</span>
-                    <span style={{ fontWeight: 600 }}>{value}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
-              <button 
-                className="btn btn-primary btn-sm"
-                onClick={async () => {
-                  if (receiptData?.receiptId) {
-                    try {
-                      await receiptPdfService.downloadReceiptPdf(receiptData.receiptId);
-                    } catch (err) {
-                      alert('Failed to download receipt.');
-                    }
-                  }
-                }}
-              >
-                <Download size={12} /> Download PDF
-              </button>
-              <button 
-                className="btn btn-secondary btn-sm"
-                onClick={async () => {
-                  if (receiptData?.receiptId) {
-                    try {
-                      await receiptPdfService.printReceipt(receiptData.receiptId);
-                    } catch (err) {
-                      alert('Failed to print receipt.');
-                    }
-                  }
-                }}
-              >
-                <Printer size={12} /> Print
-              </button>
-            </div>
-
-            <button 
-              className="btn btn-secondary" 
-              style={{ width: '100%' }}
-              onClick={() => { 
-                setPaid(false); 
-                setFound(null); 
-                setQuery(''); 
-                setSelectedInstNos([]); 
-                setReceiptData(null); 
-              }}
-            >
-              ➕ New Payment
-            </button>
-          </div>
-        </div>
+      {paid && found && showProfessionalReceipt && professionalReceiptData && (
+        <ProfessionalReceipt 
+          data={professionalReceiptData}
+          onClose={() => {
+            setPaid(false); 
+            setFound(null); 
+            setQuery(''); 
+            setSelectedInstNos([]); 
+            setReceiptData(null);
+            setShowProfessionalReceipt(false);
+            setProfessionalReceiptData(null);
+          }}
+        />
       )}
     </div>
   );

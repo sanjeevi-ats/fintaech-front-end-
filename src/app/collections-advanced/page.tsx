@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   Search, FileText, User, Calendar, DollarSign, CheckCircle2, AlertTriangle, 
   Loader2, CreditCard, Clock, TrendingUp, Hash, CheckCircle, Download, Eye, 
-  RefreshCw, Filter, BarChart3
+  RefreshCw, Filter, BarChart3, Clock as History
 } from 'lucide-react';
 import { collectionService, LoanInstallmentSummary } from '@/services/collectionService';
 import { loanClosureService, LoanClosureStatus } from '@/services/loanClosureService';
@@ -215,7 +215,7 @@ export default function CollectionsAdvancedPage() {
                 <input
                   type="text"
                   className="input"
-                  placeholder="Enter Customer Name, Phone, ID, or Loan ID..."
+                  placeholder="Enter Customer Name, Phone, Code, or Loan Code..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
@@ -283,7 +283,7 @@ export default function CollectionsAdvancedPage() {
                       <div>
                         <div style={{ fontSize: 14, fontWeight: 600 }}>{loan.customerName}</div>
                         <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-                          Loan: {loan.loanId.slice(0, 12)}... • Pending: {loan.pendingInstallments}
+                          Loan: {loan.loanCode || 'N/A'} • Pending: {loan.pendingInstallments}
                         </div>
                       </div>
                       <div style={{ textAlign: 'right' }}>
@@ -357,8 +357,8 @@ export default function CollectionsAdvancedPage() {
                           <div style={{ fontSize: 14, fontWeight: 600 }}>{selectedLoan.customerName}</div>
                         </div>
                         <div>
-                          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>Loan ID</div>
-                          <div style={{ fontSize: 12, fontFamily: 'monospace' }}>{selectedLoan.loanId.slice(0, 16)}...</div>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>Loan Code</div>
+                          <div style={{ fontSize: 14, fontWeight: 700, color: '#6366f1' }}>{selectedLoan.loanCode || 'N/A'}</div>
                         </div>
                         <div>
                           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>Total Loan Amount</div>

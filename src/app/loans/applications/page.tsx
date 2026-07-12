@@ -15,6 +15,8 @@ export default function ApplicationsPage() {
   const [selected, setSelected] = useState<string | null>(null);
   const [showNew, setShowNew] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [submittingForApproval, setSubmittingForApproval] = useState(false);
+  const [showSubmitDialog, setShowSubmitDialog] = useState(false);
 
   // Form state for new application
   const [formData, setFormData] = useState({
@@ -69,6 +71,27 @@ export default function ApplicationsPage() {
       alert('Loan disbursed successfully!');
     } catch (err: any) {
       alert(`Failed to disburse loan: ${err.message}`);
+    }
+  };
+
+  /**
+   * PHASE 3: Submit loan for approval
+   * Changes status from DRAFT to PENDING_APPROVAL
+   */
+  const handleSubmitForApproval = async () => {
+    if (!selectedApp) return;
+    
+    try {
+      setSubmittingForApproval(true);
+      await loanService.submitLoanForApproval(selectedApp.id);
+      setShowSubmitDialog(false);
+      alert('Loan submitted for approval successfully! Admin will review your application.');
+      await loadData(); // Refresh data
+      setSelected(null);
+    } catch (err: any) {
+      alert(`Failed to submit for approval: ${err.message}`);
+    } finally {
+      setSubmittingForApproval(false);
     }
   };
 
@@ -171,7 +194,7 @@ export default function ApplicationsPage() {
           <table className="data-table">
             <thead>
               <tr>
-                <th style={{ paddingLeft: 16, paddingTop: 14, paddingBottom: 14 }}>Loan ID</th>
+                <th style={{ paddingLeft: 16, paddingTop: 14, paddingBottom: 14 }}>Loan Code</th>
                 <th>Customer</th>
                 <th>Principal</th>
                 <th>Total Receivable</th>
@@ -182,10 +205,10 @@ export default function ApplicationsPage() {
             <tbody>
               {applications.map(app => (
                 <tr key={app.id} onClick={() => setSelected(app.id)} style={{ cursor: 'pointer', background: selected === app.id ? 'rgba(99,102,241,0.08)' : '' }}>
-                  <td className="primary mono" style={{ paddingLeft: 16 }}>{app.id.slice(0, 8)}...</td>
+                  <td className="primary mono" style={{ paddingLeft: 16 }}>{app.loanCode || 'N/A'}</td>
                   <td>
                     <div style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: 13 }}>{app.customerName}</div>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>ID: {app.customerId.slice(0, 8)}...</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Customer Code: {app.customerCode || 'N/A'}</div>
                   </td>
                   <td style={{ fontWeight: 700 }}>₹{(app.principal / 100).toLocaleString()}</td>
                   <td style={{ fontWeight: 700 }}>₹{(app.totalReceivable / 100).toLocaleString()}</td>
@@ -216,9 +239,9 @@ export default function ApplicationsPage() {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {[
-                  { label: 'Loan ID', val: selectedApp.id },
+                  { label: 'Loan Code', val: selectedApp.loanCode || 'N/A' },
                   { label: 'Customer', val: selectedApp.customerName },
-                  { label: 'Customer ID', val: selectedApp.customerId },
+                  { label: 'Customer Code', val: selectedApp.customerCode || 'N/A' },
                   { label: 'Principal Amount', val: `₹${(selectedApp.principal / 100).toLocaleString()}` },
                   { label: 'Interest Amount', val: `₹${(selectedApp.interestAmount / 100).toLocaleString()}` },
                   { label: 'Total Receivable', val: `₹${(selectedApp.totalReceivable / 100).toLocaleString()}` },
@@ -234,9 +257,18 @@ export default function ApplicationsPage() {
 
               {/* Action buttons based on status */}
               {selectedApp.status === 'draft' && (
-                <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
-                  <button className="btn btn-success" style={{ flex: 1 }} onClick={() => handleApprove(selectedApp.id)}>
-                    <CheckCircle2 size={13} /> Approve
+                <div style={{ display: 'flex', gap: 8, marginTop: 14, flexDirection: 'column' }}>
+                  <button 
+                    className="btn btn-primary" 
+                    style={{ width: '100%' }} 
+                    onClick={() => setShowSubmitDialog(true)}
+                    disabled={submittingForApproval}
+                  >
+                    {submittingForApproval ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
+                    Submit for Approval
+                  </button>
+                  <button className="btn btn-success" style={{ width: '100%' }} onClick={() => handleApprove(selectedApp.id)}>
+                    <CheckCircle2 size={13} /> Approve Directly (Admin Only)
                   </button>
                 </div>
               )}
@@ -346,6 +378,38 @@ export default function ApplicationsPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* PHASE 3: Submit for Approval Dialog */}
+      {showSubmitDialog && selectedApp && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000 }}>
+          <div className="card" style={{ width: 420 }}>
+            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>Submit Loan for Approval</div>
+            <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16, lineHeight: 1.5 }}>
+              You are about to submit <strong>{selectedApp.loanCode}</strong> (₹{(selectedApp.totalReceivable / 100).toLocaleString()}) for admin approval.
+            </p>
+            <div style={{ background: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.3)', borderRadius: 8, padding: 12, marginBottom: 16, fontSize: 12, color: 'var(--text-secondary)' }}>
+              ℹ️ Once submitted, an administrator will review your application and either approve or reject it. You'll be notified of the decision.
+            </div>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button
+                className="btn btn-secondary"
+                onClick={() => setShowSubmitDialog(false)}
+                disabled={submittingForApproval}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={handleSubmitForApproval}
+                disabled={submittingForApproval}
+              >
+                {submittingForApproval ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
+                Submit for Approval
+              </button>
+            </div>
           </div>
         </div>
       )}

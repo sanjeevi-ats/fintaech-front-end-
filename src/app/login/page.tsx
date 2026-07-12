@@ -1,16 +1,17 @@
 'use client';
 import React, { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Eye, EyeOff, Lock, Mail, Shield, AlertTriangle, CheckCircle2, Loader2, ArrowRight, Smartphone } from 'lucide-react';
+import { Eye, EyeOff, Lock, Mail, Shield, AlertTriangle, CheckCircle2, Loader2, ArrowRight, Smartphone, Landmark } from 'lucide-react';
 import { useAuth, ROLE_HOME, ROLE_LABELS } from '@/context/AuthContext';
+import { companyService } from '@/services/companyService';
 
 // Demo credential hints
 const DEMO_HINTS = [
-  { role: 'Super Admin', email: 'admin@annaitech.in', password: 'Admin@123', color: '#6366f1' },
-  { role: 'Partner', email: 'partner@annaitech.in', password: 'Partner@123', color: '#8b5cf6' },
-  { role: 'Branch Manager', email: 'manager@annaitech.in', password: 'Manager@123', color: '#10b981' },
-  { role: 'Accountant', email: 'accountant@annaitech.in', password: 'Accounts@123', color: '#f59e0b' },
-  { role: 'Collection Officer', email: 'collection@annaitech.in', password: 'Collect@123', color: '#06b6d4' },
+  { role: 'Super Admin', email: 'admin@vettrifinance.com', password: 'Admin@123', color: '#6366f1' },
+  { role: 'Partner', email: 'partner@vettrifinance.com', password: 'Partner@123', color: '#8b5cf6' },
+  { role: 'Branch Manager', email: 'manager@vettrifinance.com', password: 'Manager@123', color: '#10b981' },
+  { role: 'Accountant', email: 'accountant@vettrifinance.com', password: 'Accounts@123', color: '#f59e0b' },
+  { role: 'Collection Officer', email: 'collection@vettrifinance.com', password: 'Collect@123', color: '#06b6d4' },
 ];
 
 function LoginPageContent() {
@@ -31,6 +32,21 @@ function LoginPageContent() {
   const [showHints, setShowHints] = useState(false);
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [lockCountdown, setLockCountdown] = useState(0);
+  const [companySettings, setCompanySettings] = useState<any>(null);
+
+  useEffect(() => {
+    const fetchCompany = async () => {
+      try {
+        const res = await companyService.get();
+        if (res && res.companyName) {
+          setCompanySettings(res);
+        }
+      } catch (err) {
+        console.error('Failed to load company settings in login page', err);
+      }
+    };
+    fetchCompany();
+  }, []);
 
   // Redirect if already authenticated
   useEffect(() => {
@@ -141,11 +157,24 @@ function LoginPageContent() {
             background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             boxShadow: '0 8px 24px rgba(99,102,241,0.4)',
+            overflow: 'hidden'
           }}>
-            <Shield size={26} color="white" />
+            {companySettings?.logoBase64 ? (
+              <img 
+                src={`data:${companySettings.logoMimeType || 'image/png'};base64,${companySettings.logoBase64}`} 
+                alt="Logo" 
+                style={{ width: '100%', height: '100%', objectFit: 'cover' }} 
+              />
+            ) : (
+              <Shield size={26} color="white" />
+            )}
           </div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: '#ffffff', letterSpacing: '-0.5px' }}>AnnaiTech Solutions</div>
-          <div style={{ fontSize: 13, color: '#5a5a72', marginTop: 4 }}>Microfinance ERP — Secure Gateway</div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: '#ffffff', letterSpacing: '-0.5px' }}>
+            {companySettings?.companyName || 'Vettri Finance Pvt Ltd'}
+          </div>
+          <div style={{ fontSize: 13, color: '#5a5a72', marginTop: 4 }}>
+            {companySettings?.tagline || 'Microfinance ERP — Secure Gateway'}
+          </div>
         </div>
 
         {/* Card */}
@@ -280,7 +309,7 @@ function LoginPageContent() {
                   <Mail size={15} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: '#5a5a72' }} />
                   <input
                     type="email" required value={email} onChange={e => { setEmail(e.target.value); clearError(); }}
-                    placeholder="you@annaitech.in" autoComplete="username"
+                    placeholder="you@vettrifinance.com" autoComplete="username"
                     style={{
                       width: '100%', padding: '11px 12px 11px 36px',
                       background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
@@ -362,38 +391,13 @@ function LoginPageContent() {
                   : <>Sign In <ArrowRight size={15} /></>
                 }
               </button>
-
-              {/* Demo accounts hint */}
-              <div style={{ marginTop: 20, textAlign: 'center' }}>
-                <button type="button" onClick={() => setShowHints(!showHints)}
-                  style={{ background: 'none', border: 'none', color: '#5a5a72', fontSize: 12, cursor: 'pointer', textDecoration: 'underline' }}>
-                  {showHints ? '▲ Hide' : '▼ Show'} demo accounts
-                </button>
-              </div>
-
-              {showHints && (
-                <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {DEMO_HINTS.map(h => (
-                    <button key={h.role} type="button" onClick={() => fillDemo(h.email, h.password)}
-                      style={{
-                        background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)',
-                        borderRadius: 8, padding: '8px 12px', cursor: 'pointer', textAlign: 'left',
-                        display: 'flex', alignItems: 'center', gap: 8,
-                      }}>
-                      <div style={{ width: 8, height: 8, borderRadius: '50%', background: h.color, flexShrink: 0 }} />
-                      <span style={{ fontSize: 11, color: '#9494aa', fontWeight: 600 }}>{h.role}:</span>
-                      <span style={{ fontSize: 11, color: '#5a5a72', fontFamily: 'monospace' }}>{h.email}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
             </form>
           )}
         </div>
 
         {/* Footer */}
         <div style={{ textAlign: 'center', marginTop: 20 }}>
-          <div style={{ fontSize: 11, color: '#3a3a4e' }}>© 2026 AnnaiTech Solutions Pvt. Ltd. · v2.0</div>
+          <div style={{ fontSize: 11, color: '#3a3a4e' }}>© 2026 Vettri Finance Pvt Ltd · v2.0</div>
           <div style={{ fontSize: 10, color: '#2e2e42', marginTop: 4 }}>🔒 TLS 1.3 · AES-256 Encrypted · SOC 2 Compliant</div>
         </div>
       </div>

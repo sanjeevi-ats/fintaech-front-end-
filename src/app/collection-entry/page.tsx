@@ -1,9 +1,11 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Search, FileText, User, Calendar, DollarSign, CheckCircle2, AlertTriangle, Loader2, CreditCard, Clock, TrendingUp, Hash, CheckCircle } from 'lucide-react';
+import { Search, FileText, User, Calendar, DollarSign, CheckCircle2, AlertTriangle, Loader2, CreditCard, Clock, TrendingUp, Hash, CheckCircle, Download, Printer } from 'lucide-react';
 import { collectionService, LoanInstallmentSummary, CollectionEntryRequest } from '@/services/collectionService';
 import { useAuth } from '@/context/AuthContext';
+import { collectionRequestService } from '@/services/collectionRequestService';
+import { downloadReceiptAsPDF, printReceipt, UniversalReceiptData } from '@/utils/receiptPdfGenerator';
 
 export default function CollectionEntryPage() {
   const { user } = useAuth();
@@ -15,16 +17,22 @@ export default function CollectionEntryPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [receiptData, setReceiptData] = useState<UniversalReceiptData | null>(null);
+
+  const isAdmin = user?.role === 'super_admin' || user?.role === 'branch_manager';
 
   // Form data
   const [formData, setFormData] = useState({
     collectionAmount: '',
     remarks: '',
-    collectionDate: new Date().toISOString().split('T')[0]
+    collectionDate: new Date().toISOString().split('T')[0],
+    paymentMode: 'Cash',
+    utrRef: '',
+    directEntry: true
   });
 
   // Role-based access control - Admin and Collection Agent
-  const hasCollectionAccess = user?.role === 'super_admin' || user?.role === 'collection_officer' || user?.role === 'agent';
+  const hasCollectionAccess = user?.role === 'super_admin' || user?.role === 'branch_manager' || user?.role === 'collection_officer' || user?.role === 'agent';
 
   // Date validation
   const validateDate = (selectedDate: string) => {
@@ -92,7 +100,10 @@ export default function CollectionEntryPage() {
     setFormData({
       collectionAmount: (suggestedAmount / 100).toString(),
       remarks: '',
-      collectionDate: new Date().toISOString().split('T')[0]
+      collectionDate: new Date().toISOString().split('T')[0],
+      paymentMode: 'Cash',
+      utrRef: '',
+      directEntry: isAdmin
     });
   };
 
@@ -125,45 +136,144 @@ export default function CollectionEntryPage() {
 
     try {
       const collectionAmount = Math.round(parseFloat(formData.collectionAmount) * 100); // Convert to paise
+      const isDirect = isAdmin && formData.directEntry;
 
-      const request: CollectionEntryRequest = {
-        loanId: selectedLoan.loanId,
-        customerId: selectedLoan.customerId,
-        amount: collectionAmount,
-        remarks: formData.remarks,
-        collectionDate: formData.collectionDate
-      };
+      if (isDirect) {
+        // Direct collection entry flow (immediate updates, for admins only)
+        const request: CollectionEntryRequest = {
+          loanId: selectedLoan.loanId,
+          customerId: selectedLoan.customerId,
+          amount: collectionAmount,
+          remarks: formData.remarks,
+          collectionDate: formData.collectionDate,
+          paymentMode: formData.paymentMode,
+          utrRef: formData.utrRef
+        };
 
-      console.log('📤 Submitting collection request:', request);
-      const response = await collectionService.submitCollectionEntry(request);
+        console.log('📤 Submitting direct collection entry:', request);
+        const response = await collectionService.submitCollectionEntry(request);
 
-      if (response.success) {
-        setSuccess(`✅ Collection recorded successfully! ${response.receiptId ? `Receipt: ${response.receiptId}` : ''}`);
-        
-        // Refresh the loan data to show updated installment status
-        setTimeout(async () => {
-          try {
-            console.log('🔄 Refreshing loan data...');
-            const updatedResults = await collectionService.searchLoanByCustomer(searchTerm);
-            const updatedLoan = updatedResults.find(loan => loan.loanId === selectedLoan.loanId);
-            if (updatedLoan) {
-              setSelectedLoan(updatedLoan as LoanInstallmentSummary);
-              setSearchResults(updatedResults as LoanInstallmentSummary[]);
-              console.log('✅ Loan data refreshed');
+        if (response.success) {
+          setSuccess(`✅ Collection recorded successfully! ${response.receiptId ? `Receipt: ${response.receiptId}` : ''}`);
+          
+          // Prepare receipt data for PDF generation
+          const receiptInfo: UniversalReceiptData = {
+            receiptNumber: response.receiptId || `RCP${Date.now().toString().slice(-6)}`,
+            receiptDate: formData.collectionDate || new Date().toISOString(),
+            customerName: selectedLoan.customerName,
+            customerCode: selectedLoan.customerId.substring(0, 8),
+            customerPhone: selectedLoan.customerPhone,
+            loanCode: selectedLoan.loanId.substring(0, 8),
+            loanAmount: selectedLoan.totalReceivable,
+            paidBefore: selectedLoan.totalReceivable - selectedLoan.totalDue - collectionAmount,
+            todaysPayment: collectionAmount,
+            totalPaid: selectedLoan.totalReceivable - selectedLoan.totalDue,
+            outstanding: selectedLoan.totalDue - collectionAmount,
+            paymentMode: formData.paymentMode,
+            utrRef: formData.utrRef,
+            remarks: formData.remarks,
+            collectionDate: formData.collectionDate,
+            collectedBy: user?.name || 'System'
+          };
+          setReceiptData(receiptInfo);
+          
+          // Refresh the loan data to show updated installment status
+          setTimeout(async () => {
+            try {
+              console.log('🔄 Refreshing loan data...');
+              const updatedResults = await collectionService.searchLoanByCustomer(searchTerm);
+              const updatedLoan = updatedResults.find(loan => loan.loanId === selectedLoan.loanId);
+              if (updatedLoan) {
+                setSelectedLoan(updatedLoan as LoanInstallmentSummary);
+                setSearchResults(updatedResults as LoanInstallmentSummary[]);
+                console.log('✅ Loan data refreshed');
+              }
+            } catch (refreshError) {
+              console.warn('⚠️ Failed to refresh loan data:', refreshError);
             }
-          } catch (refreshError) {
-            console.warn('⚠️ Failed to refresh loan data:', refreshError);
-          }
-        }, 1500);
+          }, 1500);
 
-        // Clear form but keep context
-        setFormData({
-          collectionAmount: '',
-          remarks: '',
-          collectionDate: new Date().toISOString().split('T')[0]
-        });
+          // Clear form but keep context
+          setFormData({
+            collectionAmount: '',
+            remarks: '',
+            collectionDate: new Date().toISOString().split('T')[0],
+            paymentMode: 'Cash',
+            utrRef: '',
+            directEntry: isAdmin
+          });
+        } else {
+          setError(response.message || 'Failed to record collection');
+        }
       } else {
-        setError(response.message || 'Failed to record collection');
+        // Workflow-based pending approval request flow (for agents, and admins when directEntry is false)
+        // Get installments for this loan to distribute payment
+        const installments = await collectionService.getInstallmentsByLoan(selectedLoan.loanId);
+        const pendingInstallments = installments
+          .filter(inst => inst.status === 'pending')
+          .sort((a, b) => a.no - b.no);
+
+        if (pendingInstallments.length === 0) {
+          throw new Error('No pending installments found for this loan');
+        }
+
+        let remainingAmount = collectionAmount;
+        const requestsToSubmit = [];
+
+        for (const installment of pendingInstallments) {
+          if (remainingAmount <= 0) break;
+          const paymentAmount = Math.min(remainingAmount, installment.amount);
+          requestsToSubmit.push({
+            installmentId: installment.id,
+            amountPaid: paymentAmount,
+            mode: formData.paymentMode,
+            utrRef: formData.utrRef,
+            remarks: formData.remarks
+          });
+          remainingAmount -= paymentAmount;
+        }
+
+        let successCount = 0;
+        let reqNumbers: string[] = [];
+
+        for (const req of requestsToSubmit) {
+          console.log('📤 Submitting collection request for approval:', req);
+          const res = await collectionRequestService.createRequest(req);
+          if (res.success && res.data) {
+            successCount++;
+            reqNumbers.push(res.data.requestNumber);
+          }
+        }
+
+        if (successCount > 0) {
+          setSuccess(`✅ Collection request(s) submitted for approval! Request No(s): ${reqNumbers.join(', ')}. Status: Pending Approval.`);
+          
+          // Refresh the loan data (which won't change immediately since requests are pending, but good practice)
+          setTimeout(async () => {
+            try {
+              const updatedResults = await collectionService.searchLoanByCustomer(searchTerm);
+              const updatedLoan = updatedResults.find(loan => loan.loanId === selectedLoan.loanId);
+              if (updatedLoan) {
+                setSelectedLoan(updatedLoan as LoanInstallmentSummary);
+                setSearchResults(updatedResults as LoanInstallmentSummary[]);
+              }
+            } catch (refreshError) {
+              console.warn('Failed to refresh data:', refreshError);
+            }
+          }, 1500);
+
+          // Clear form
+          setFormData({
+            collectionAmount: '',
+            remarks: '',
+            collectionDate: new Date().toISOString().split('T')[0],
+            paymentMode: 'Cash',
+            utrRef: '',
+            directEntry: isAdmin
+          });
+        } else {
+          throw new Error('Failed to submit collection request(s) for approval.');
+        }
       }
     } catch (err: any) {
       console.error('❌ Collection submission error:', err);
@@ -174,7 +284,7 @@ export default function CollectionEntryPage() {
       } else if (err.message.includes('Failed to record any payments')) {
         setError('Could not record payment. Please verify the backend API is configured correctly.');
       } else {
-        setError(err.message || 'Failed to record collection. Please try again.');
+        setError(err.message || 'Failed to process collection. Please try again.');
       }
     } finally {
       setSubmitting(false);
@@ -220,7 +330,7 @@ export default function CollectionEntryPage() {
                 <input
                   type="text"
                   className="input"
-                  placeholder="Enter Customer Name OR Loan ID..."
+                  placeholder="Enter Customer Code (CUS00001), Customer Name, or Loan Code (LN-2024-001)..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
@@ -248,7 +358,7 @@ export default function CollectionEntryPage() {
             </div>
 
             <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-              💡 <strong>Search Options:</strong> Customer Name ("Amit Sharma") • Customer ID • Loan ID ("LN-2024-001")
+              💡 <strong>Search Options:</strong> Customer Code ("CUS00001") • Customer Name ("Amit Sharma") • Loan Code ("LN-2024-001")
             </div>
           </div>
 
@@ -262,9 +372,41 @@ export default function CollectionEntryPage() {
 
           {/* Success Display */}
           {success && (
-            <div className="alert alert-success" style={{ marginBottom: 20 }}>
-              <CheckCircle2 size={16} />
-              {success}
+            <div>
+              <div className="alert alert-success" style={{ marginBottom: 12 }}>
+                <CheckCircle2 size={16} />
+                {success}
+              </div>
+              
+              {/* PDF Download Buttons */}
+              {receiptData && (
+                <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+                  <button 
+                    className="btn btn-primary btn-sm"
+                    onClick={async () => {
+                      try {
+                        await downloadReceiptAsPDF(receiptData);
+                      } catch (err) {
+                        alert('Failed to download PDF. Please try again.');
+                      }
+                    }}
+                  >
+                    <Download size={14} /> Download Receipt PDF
+                  </button>
+                  <button 
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => {
+                      try {
+                        printReceipt(receiptData);
+                      } catch (err) {
+                        alert('Failed to open print dialog.');
+                      }
+                    }}
+                  >
+                    <Printer size={14} /> Print Receipt
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -295,7 +437,7 @@ export default function CollectionEntryPage() {
                           {loan.customerName}
                         </div>
                         <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-                          Loan: {loan.loanId.slice(0, 12)}... • Customer: {loan.customerId.slice(0, 8)}...
+                          Loan: {loan.loanCode || 'N/A'} • Customer: {loan.customerCode || 'N/A'}
                         </div>
                       </div>
                       <div style={{ textAlign: 'right' }}>
@@ -340,8 +482,8 @@ export default function CollectionEntryPage() {
                       <div style={{ fontSize: 14, fontWeight: 600 }}>{selectedLoan.customerName}</div>
                     </div>
                     <div>
-                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>Loan ID</div>
-                      <div style={{ fontSize: 12, fontFamily: 'monospace' }}>{selectedLoan.loanId.slice(0, 16)}...</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>Loan Code</div>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: '#6366f1' }}>{selectedLoan.loanCode || 'N/A'}</div>
                     </div>
                     <div>
                       <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>Total Loan Amount</div>
@@ -540,22 +682,23 @@ export default function CollectionEntryPage() {
                     />
                   </div>
 
-                  {/* Loan ID - Readonly */}
+                  {/* Loan Code - Readonly */}
                   <div style={{ marginBottom: 16 }}>
                     <div className="input-label">
-                      <Hash size={12} /> Loan ID
+                      <Hash size={12} /> Loan Code
                     </div>
                     <input
                       type="text"
                       className="input"
-                      value={selectedLoan.loanId}
+                      value={selectedLoan.loanCode || selectedLoan.loanId}
                       readOnly
                       style={{ 
                         background: 'var(--bg-elevated)', 
                         color: 'var(--text-muted)',
                         cursor: 'not-allowed',
                         fontFamily: 'monospace',
-                        fontSize: '12px'
+                        fontSize: '14px',
+                        fontWeight: '600'
                       }}
                     />
                   </div>
@@ -577,6 +720,97 @@ export default function CollectionEntryPage() {
                       ✅ Today and previous dates allowed • ❌ Future dates restricted
                     </div>
                   </div>
+
+                  {/* Direct Entry Switch (Admin Only) */}
+                  {isAdmin && (
+                    <div style={{ 
+                      marginBottom: 16, 
+                      padding: 12, 
+                      background: 'rgba(99, 102, 241, 0.05)', 
+                      borderRadius: 8, 
+                      border: '1px solid rgba(99, 102, 241, 0.15)',
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      justifyContent: 'space-between' 
+                    }}>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>Direct Collection Entry</div>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Skip approval workflow and update immediately</div>
+                      </div>
+                      <label className="switch" style={{ position: 'relative', display: 'inline-block', width: 44, height: 24 }}>
+                        <input 
+                          type="checkbox" 
+                          checked={formData.directEntry}
+                          onChange={(e) => setFormData(prev => ({ ...prev, directEntry: e.target.checked }))}
+                          style={{ opacity: 0, width: 0, height: 0 }}
+                        />
+                        <span style={{
+                          position: 'absolute',
+                          cursor: 'pointer',
+                          top: 0, left: 0, right: 0, bottom: 0,
+                          backgroundColor: formData.directEntry ? '#6366f1' : '#ccc',
+                          transition: '0.4s',
+                          borderRadius: 24,
+                          boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.2)'
+                        }}>
+                          <span style={{
+                            position: 'absolute',
+                            content: '""',
+                            height: 18, width: 18,
+                            left: formData.directEntry ? 22 : 4,
+                            bottom: 3,
+                            backgroundColor: 'white',
+                            transition: '0.4s',
+                            borderRadius: '50%',
+                            boxShadow: '0 1px 3px rgba(0,0,0,0.3)'
+                          }} />
+                        </span>
+                      </label>
+                    </div>
+                  )}
+
+                  {/* Payment Mode */}
+                  <div style={{ marginBottom: 16 }}>
+                    <div className="input-label">
+                      <CreditCard size={12} /> Payment Mode *
+                    </div>
+                    <select
+                      className="input"
+                      value={formData.paymentMode}
+                      onChange={(e) => setFormData(prev => ({ ...prev, paymentMode: e.target.value }))}
+                      required
+                      style={{ 
+                        height: 44, 
+                        fontSize: 14, 
+                        width: '100%', 
+                        background: 'var(--bg-elevated)', 
+                        color: 'var(--text-primary)',
+                        borderColor: 'var(--bg-border)'
+                      }}
+                    >
+                      <option value="Cash">Cash</option>
+                      <option value="Upi">UPI / QR Code</option>
+                      <option value="Bank_Transfer">Bank Transfer (IMPS/NEFT)</option>
+                    </select>
+                  </div>
+
+                  {/* UTR / Reference Number */}
+                  {formData.paymentMode !== 'Cash' && (
+                    <div style={{ marginBottom: 16 }}>
+                      <div className="input-label">
+                        <Hash size={12} /> UTR / Transaction Reference *
+                      </div>
+                      <input
+                        type="text"
+                        className="input"
+                        placeholder="Enter UTR or Txn Ref No..."
+                        value={formData.utrRef}
+                        onChange={(e) => setFormData(prev => ({ ...prev, utrRef: e.target.value }))}
+                        required
+                        style={{ height: 44, fontSize: 14 }}
+                      />
+                    </div>
+                  )}
 
                   {/* Collection Amount */}
                   <div style={{ marginBottom: 16 }}>

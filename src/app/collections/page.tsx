@@ -1,11 +1,16 @@
 'use client';
 import React, { useState, useEffect, useCallback } from 'react';
-import { ClipboardList, CheckCircle2, MapPin, AlertTriangle, Loader2, AlertCircle, Edit3, History } from 'lucide-react';
+import { ClipboardList, CheckCircle2, MapPin, AlertTriangle, Loader2, AlertCircle, Edit3, History, Download, Printer } from 'lucide-react';
 import { collectionService, Installment } from '@/services/collectionService';
 import { loanService, LoanCase } from '@/services/loanService';
 // import DailyCollectionUpdate from '@/components/DailyCollectionUpdate';
 // import CollectionAuditTrail from '@/components/CollectionAuditTrail';
 import { useAuth } from '@/context/AuthContext';
+import CodeSearchBar from '@/components/CodeSearchBar';
+import AdvancedFilterPanel from '@/components/AdvancedFilterPanel';
+import { searchEntity } from '@/lib/searchUtils';
+import { applyFilters, StatusFilter, DateRangeFilter, AmountRangeFilter } from '@/lib/filterUtils';
+import { downloadReceiptAsPDF, printReceipt, UniversalReceiptData } from '@/utils/receiptPdfGenerator';
 
 // Inline CollectionEntrySheet component to avoid module import issues
 const CollectionEntrySheet = ({ installments, loans, onClose, onSuccess }: {
@@ -38,14 +43,27 @@ const CollectionEntrySheet = ({ installments, loans, onClose, onSuccess }: {
     }
   }, [hasCollectionAccess]);
 
-  // Filter installments based on search term
+  // Filter installments based on search term — shows ALL pending installments by default
   const filteredInstallments = installments.filter(installment => {
+    // Only show pending/partially_paid installments in the entry sheet
+    if (installment.status !== 'pending' && installment.status !== 'partially_paid') return false;
+    
+    // If no search, show all pending
+    if (!searchTerm.trim()) return true;
+    
     const loan = loans[installment.loanCaseId];
     const customerName = loan?.customerName?.toLowerCase() || '';
+    const customerCode = loan?.customerCode?.toLowerCase() || '';
+    const loanCode = loan?.loanCode?.toLowerCase() || '';
     const loanId = installment.loanCaseId.toLowerCase();
+    const installmentNo = installment.no.toString();
     const search = searchTerm.toLowerCase();
     
-    return customerName.includes(search) || loanId.includes(search);
+    return customerName.includes(search) || 
+           customerCode.includes(search) ||
+           loanCode.includes(search) ||
+           loanId.includes(search) ||
+           installmentNo.includes(search);
   });
 
   // Date validation
@@ -105,17 +123,35 @@ const CollectionEntrySheet = ({ installments, loans, onClose, onSuccess }: {
       setError(null);
       setSuccess(null);
 
-      const collectRequest = {
-        installmentId: formData.selectedInstallment.id,
-        amountPaid: collectionAmountPaise,
-        mode: 'Cash',
-        utrRef: '',
-        remarks: formData.remarks
-      };
+      // Check if user is admin - if so, use direct recording, otherwise submit for approval
+      const isAdmin = user?.role === 'super_admin' || user?.role === 'branch_manager';
 
-      await collectionService.recordPayment(collectRequest);
+      if (isAdmin) {
+        // Admin can directly record collections
+        const collectRequest = {
+          installmentId: formData.selectedInstallment.id,
+          amountPaid: collectionAmountPaise,
+          mode: 'Cash',
+          utrRef: '',
+          remarks: formData.remarks
+        };
 
-      setSuccess('Collection recorded successfully!');
+        await collectionService.recordPayment(collectRequest);
+        setSuccess('Collection recorded successfully!');
+      } else {
+        // Collection officers submit for approval
+        const submitRequest = {
+          installmentId: formData.selectedInstallment.id,
+          amountPaid: collectionAmountPaise,
+          mode: 'cash',
+          utrRef: '',
+          remarks: formData.remarks
+        };
+
+        await collectionService.submitCollectionRequest(submitRequest);
+        setSuccess('Collection request submitted for approval! Admin will review shortly.');
+      }
+
       setTimeout(() => {
         onSuccess();
         onClose();
@@ -126,7 +162,7 @@ const CollectionEntrySheet = ({ installments, loans, onClose, onSuccess }: {
       if (err.message.includes('Redis')) {
         setError('Redis connection error. Please contact system administrator or update backend connection string with abortConnect=false.');
       } else {
-        setError(err.message || 'Failed to record collection. Please try again.');
+        setError(err.message || 'Failed to submit collection. Please try again.');
       }
     } finally {
       setLoading(false);
@@ -214,10 +250,15 @@ const CollectionEntrySheet = ({ installments, loans, onClose, onSuccess }: {
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <div>
                             <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>
-                              {loan?.customerName || 'Loading...'}
+                              {loan?.customerName || 'Customer'}
+                              {loan?.customerCode && (
+                                <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 6 }}>
+                                  ({loan.customerCode})
+                                </span>
+                              )}
                             </div>
                             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-                              Loan: {installment.loanCaseId.slice(0, 12)}... • Installment #{installment.no}
+                              {loan?.loanCode || `Loan: ${installment.loanCaseId.slice(0, 8)}`} • Installment #{installment.no}
                             </div>
                           </div>
                           <div style={{ textAlign: 'right' }}>
@@ -240,7 +281,12 @@ const CollectionEntrySheet = ({ installments, loans, onClose, onSuccess }: {
                   })
                 ) : (
                   <div style={{ padding: 20, textAlign: 'center', color: 'var(--text-muted)' }}>
-                    {searchTerm ? 'No matching installments found' : 'Start typing to search for loans'}
+                    {searchTerm 
+                      ? 'No matching installments found. Try a different name or loan code.'
+                      : installments.length === 0
+                        ? 'No pending installments for today. All collections are up to date!'
+                        : 'No results found.'
+                    }
                   </div>
                 )}
               </div>
@@ -374,12 +420,13 @@ const CollectionEntrySheet = ({ installments, loans, onClose, onSuccess }: {
           color: 'var(--text-muted)'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-            <span style={{ fontWeight: 600 }}>Date Validation Rules:</span>
+            <span style={{ fontWeight: 600 }}>Collection Workflow:</span>
           </div>
           <ul style={{ marginLeft: 16, marginTop: 4 }}>
-            <li>✓ Today's date is allowed</li>
-            <li>✓ Previous dates are allowed</li>
-            <li>✗ Future dates are strictly prohibited</li>
+            <li>✓ Collection Officers: Submit collection for Admin approval</li>
+            <li>✓ Admins: Direct collection recording available</li>
+            <li>✓ Upon approval: Receipt generated, Financials updated, Journal entry created</li>
+            <li>✓ See "Collection Approvals" tab for pending requests</li>
           </ul>
         </div>
       </div>
@@ -391,6 +438,12 @@ export default function CollectionsPage() {
   const { user } = useAuth();
   const [installments, setInstallments] = useState<Installment[]>([]);
   const [loans, setLoans] = useState<Record<string, LoanCase>>({});
+  const [search, setSearch] = useState('');
+  const [advancedFilters, setAdvancedFilters] = useState<{
+    status?: StatusFilter;
+    dateRange?: DateRangeFilter;
+    amountRange?: AmountRangeFilter;
+  }>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState('all');
@@ -491,6 +544,18 @@ export default function CollectionsPage() {
     if (filter === 'pending') return i.status === 'pending';
     if (filter === 'collected') return i.status === 'paid';
     return true;
+  }).filter(i => {
+    // Apply search filter
+    if (!search.trim()) return true;
+    
+    const loan = loans[i.loanCaseId];
+    const searchLower = search.toLowerCase();
+    
+    return (
+      (loan?.customerName?.toLowerCase().includes(searchLower)) ||
+      (i.loanCaseId.toLowerCase().includes(searchLower)) ||
+      (i.no.toString().includes(search))
+    );
   });
 
   const total = installments.length;
@@ -590,12 +655,30 @@ export default function CollectionsPage() {
       </div>
 
       {/* Filter */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-        {['all', 'pending', 'collected'].map(f => (
-          <button key={f} className={`btn btn-sm ${filter === f ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setFilter(f)}>
-            {f.charAt(0).toUpperCase() + f.slice(1)}
-          </button>
-        ))}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', flexDirection: 'column' }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <div style={{ flex: 1, minWidth: 300 }}>
+            <CodeSearchBar
+              onSearch={setSearch}
+              entityType="installment"
+              placeholder="Search by installment #, loan ID, or customer name..."
+              showHistory={true}
+            />
+          </div>
+          {['all', 'pending', 'collected'].map(f => (
+            <button key={f} className={`btn btn-sm ${filter === f ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setFilter(f)}>
+              {f.charAt(0).toUpperCase() + f.slice(1)}
+            </button>
+          ))}
+        </div>
+        <AdvancedFilterPanel
+          entityType="collection"
+          onFilterChange={setAdvancedFilters}
+          showDateFilter={true}
+          showAmountFilter={true}
+          dateField="dueDate"
+          amountField="amount"
+        />
       </div>
 
       <div className="card" style={{ padding: 0 }}>
@@ -604,7 +687,7 @@ export default function CollectionsPage() {
             <tr>
               <th style={{ paddingLeft: 16 }}>#</th>
               <th>Customer</th>
-              <th>Loan ID</th>
+              <th>Loan Code</th>
               <th>EMI Amount</th>
               <th>Installment No</th>
               <th>Status</th>
@@ -623,7 +706,7 @@ export default function CollectionsPage() {
                       {loan?.customerName || 'Loading...'}
                     </div>
                   </td>
-                  <td className="mono" style={{ fontSize: 11 }}>{i_item.loanCaseId.slice(0, 8)}...</td>
+                  <td className="mono" style={{ fontSize: 11 }}>{loan?.loanCode || i_item.loanCaseId.slice(0, 8)}</td>
                   <td style={{ fontWeight: 700, color: '#fbbf24' }}>₹{(i_item.amount / 100).toLocaleString()}</td>
                   <td><span className="badge badge-info">#{i_item.no}</span></td>
                   <td>

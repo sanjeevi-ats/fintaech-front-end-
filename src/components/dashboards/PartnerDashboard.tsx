@@ -1,9 +1,12 @@
 'use client';
-import React from 'react';
+import React, { useState } from 'react';
 import { AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
-import { TrendingUp, DollarSign, Percent } from 'lucide-react';
+import { TrendingUp, DollarSign, Percent, PieChart } from 'lucide-react';
 import { formatCurrency, formatNumber } from '@/lib/utils';
 import { mockPartners } from '@/lib/mockData';
+import DashboardSummaryCard from '@/components/DashboardSummaryCard';
+import AnalyticsReport from '@/components/AnalyticsReport';
+import { reportPeriods, formatReportCurrency, CategorizedData } from '@/lib/reportUtils';
 
 const capitalGrowth = [
   { month: 'Oct', totalInvestment: 5000000, value: 5210000 },
@@ -25,6 +28,12 @@ const dividendHistory = [
 
 export default function PartnerDashboard() {
   const partner = mockPartners[0];
+  const [selectedPeriod, setSelectedPeriod] = useState(reportPeriods.thisYear());
+  const [reportData] = useState<CategorizedData[]>([
+    { category: 'Equity Value', value: 6450000, percentage: 58 },
+    { category: 'Retained Earnings', value: 3200000, percentage: 29 },
+    { category: 'Dividends Paid', value: 1480000, percentage: 13 },
+  ]);
 
   return (
     <div className="fade-in-up">
@@ -114,6 +123,75 @@ export default function PartnerDashboard() {
             ))}
           </tbody>
         </table>
+      </div>
+
+      {/* PHASE 10: Partner Performance Analytics */}
+      <div style={{ marginTop: 24, marginBottom: 20 }}>
+        <div style={{ marginBottom: 16 }}>
+          <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>
+            📊 Partner Performance Analytics
+          </h2>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            Investment returns and portfolio insights
+          </p>
+        </div>
+
+        {/* Summary Cards */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 20 }}>
+          <DashboardSummaryCard
+            title="Portfolio Value"
+            value={formatReportCurrency(6450000)}
+            subtitle={`${mockPartners.length} partners`}
+            trend={{ value: 6450000, percentage: 14, direction: 'up' }}
+            icon={<DollarSign size={20} />}
+            color="primary"
+          />
+          <DashboardSummaryCard
+            title="Total Investment"
+            value={formatReportCurrency(5000000)}
+            subtitle="Capital deployed"
+            trend={{ value: 5000000, percentage: 0, direction: 'neutral' }}
+            icon={<TrendingUp size={20} />}
+            color="success"
+          />
+          <DashboardSummaryCard
+            title="Profit Generated"
+            value={formatReportCurrency(1480000)}
+            subtitle="Cumulative returns"
+            trend={{ value: 1480000, percentage: 18, direction: 'up' }}
+            icon={<PieChart size={20} />}
+            color="info"
+          />
+          <DashboardSummaryCard
+            title="Ownership"
+            value={`${partner.ownership.toFixed(1)}%`}
+            subtitle="Your weighted share"
+            trend={{ value: partner.ownership, percentage: 0, direction: 'neutral' }}
+            icon={<Percent size={20} />}
+            color="warning"
+          />
+        </div>
+
+        {/* Equity Distribution Report */}
+        <AnalyticsReport
+          title="Portfolio Composition"
+          data={reportData}
+          selectedPeriod={selectedPeriod}
+          onPeriodChange={setSelectedPeriod}
+          onExport={(data) => {
+            const csv = [
+              ['Category', 'Value', 'Percentage'],
+              ...data.map(d => [d.category, d.value, d.percentage])
+            ].map(row => row.join(',')).join('\n');
+            
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `partner-report-${new Date().toISOString().split('T')[0]}.csv`;
+            a.click();
+          }}
+        />
       </div>
     </div>
   );

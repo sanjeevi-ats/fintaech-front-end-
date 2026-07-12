@@ -3,10 +3,13 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Scale, AlertTriangle, CheckCircle2, Lock, Loader2, AlertCircle } from 'lucide-react';
 import { formatNumber } from '@/lib/utils';
 import { accountingService, TrialBalanceItem } from '@/services/accountingService';
+import CodeSearchBar from '@/components/CodeSearchBar';
+import { fuzzySearchWithCodePriority, codeSearchConfig } from '@/lib/searchUtils';
 
 export default function DayEndPage() {
   const [physicalCash, setPhysicalCash] = useState('');
   const [submitted, setSubmitted] = useState(false);
+  const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [systemCash, setSystemCash] = useState(0);
@@ -17,7 +20,20 @@ export default function DayEndPage() {
       setLoading(true);
       setError(null);
       
-      let tb: TrialBalanceItem[];
+      // First, try the dedicated DayEnd balance endpoint (fastest, most accurate)
+      let cashBalanceFetched = false;
+      try {
+        const balanceData = await accountingService.getDayEndBalance();
+        if (balanceData && typeof balanceData.systemCash === 'number') {
+          setSystemCash(balanceData.systemCash / 100); // Convert paise to rupees
+          cashBalanceFetched = true;
+        }
+      } catch (balanceErr) {
+        console.warn('DayEnd balance endpoint failed, falling back to trial balance:', balanceErr);
+      }
+
+      // Fallback: fetch trial balance to build the ledger display + derive cash
+      let tb: TrialBalanceItem[] = [];
       try {
         tb = await accountingService.getTrialBalance();
       } catch (err) {
@@ -26,29 +42,34 @@ export default function DayEndPage() {
           tb = await accountingService.getTrialBalanceAlt();
         } catch (err2) {
           console.warn('Secondary trial balance endpoint failed, trying ledger endpoint');
-          tb = await accountingService.getLedgerAlt();
+          try {
+            tb = await accountingService.getLedgerAlt();
+          } catch (err3) {
+            console.warn('All trial balance endpoints failed');
+          }
         }
       }
       
       setTrialBalance(tb);
       
-      // Look for cash accounts with various possible names
-      const cashAccount = tb.find(a => 
-        a.accountName.toLowerCase().includes('cash') || 
-        a.accountName.toLowerCase().includes('bank') ||
-        a.accountCode === 'CASH' ||
-        a.accountCode === 'BANK'
-      );
-      
-      if (cashAccount) {
-        const balance = ((cashAccount.debitBalance || 0) - (cashAccount.creditBalance || 0)) / 100;
-        setSystemCash(balance);
-      } else {
-        console.warn('No cash account found in trial balance');
-        setSystemCash(0);
+      // If balance not already fetched from dedicated endpoint, derive from trial balance
+      if (!cashBalanceFetched) {
+        const cashAccount = tb.find(a => 
+          a.accountName.toLowerCase().includes('cash') || 
+          a.accountName.toLowerCase().includes('bank') ||
+          a.accountCode === 'CASH' ||
+          a.accountCode === 'BANK'
+        );
+        
+        if (cashAccount) {
+          const balance = ((cashAccount.debitBalance || 0) - (cashAccount.creditBalance || 0)) / 100;
+          setSystemCash(balance);
+        } else {
+          setSystemCash(0);
+        }
       }
     } catch (err: any) {
-      console.error('Fetch trial balance error:', err);
+      console.error('Fetch day-end data error:', err);
       setError(`Failed to load system cash balance: ${err.message}. Please ensure the backend is running on port 5177.`);
     } finally {
       setLoading(false);
@@ -67,14 +88,7 @@ export default function DayEndPage() {
       setLoading(true);
       setError(null);
       
-      // Try primary day-end endpoint first
-      try {
-        await accountingService.closeDayEnd();
-      } catch (err) {
-        console.warn('Primary day-end endpoint failed, trying alternative');
-        await accountingService.closeDayEndAlt();
-      }
-      
+      await accountingService.closeDayEnd();
       setSubmitted(true);
     } catch (err: any) {
       console.error('Day-end close error:', err);
@@ -112,10 +126,36 @@ export default function DayEndPage() {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 380px', gap: 16 }}>
         {/* Cash Summary */}
         <div>
+          <div style={{ marginBottom: 16 }}>
+            <CodeSearchBar
+              onSearch={setSearch}
+              entityType="dayEnd"
+              placeholder="Search by account name or code..."
+              showHistory={true}
+              autoFocus={false}
+            />
+          </div>
           <div className="card" style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>System Balance Summary — {new Date().toDateString()}</div>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
+              System Balance Summary — {new Date().toDateString()}
+            </div>
+            {submitted && (
+              <div style={{ background: 'rgba(16, 185, 129, 0.1)', padding: 12, borderRadius: 8, marginBottom: 14, border: '1px solid rgba(16, 185, 129, 0.2)' }}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>Day-End Code</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: '#10b981', fontFamily: 'monospace' }}>DE{new Date().toISOString().slice(0, 10).replace(/-/g, '')}</div>
+              </div>
+            )}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-              {trialBalance.map((item, i) => (
+              {trialBalance
+                .filter(item => {
+                  if (!search.trim()) return true;
+                  const q = search.toLowerCase();
+                  return (
+                    item.accountName.toLowerCase().includes(q) ||
+                    (item.accountCode && item.accountCode.toLowerCase().includes(q))
+                  );
+                })
+                .map((item, i) => (
                 <div key={i} style={{
                   display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                   padding: '12px 16px',
@@ -221,3 +261,4 @@ export default function DayEndPage() {
     </div>
   );
 }
+

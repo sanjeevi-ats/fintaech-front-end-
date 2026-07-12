@@ -1,9 +1,12 @@
 'use client';
-import React from 'react';
+import React, { useState } from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { CheckCircle2, AlertTriangle, TrendingUp, DollarSign } from 'lucide-react';
+import { CheckCircle2, AlertTriangle, TrendingUp, DollarSign, Users, Activity } from 'lucide-react';
 import { formatNumber } from '@/lib/utils';
 import { mockLoans, mockDCS } from '@/lib/mockData';
+import DashboardSummaryCard from '@/components/DashboardSummaryCard';
+import AnalyticsReport from '@/components/AnalyticsReport';
+import { reportPeriods, formatReportCurrency, CategorizedData } from '@/lib/reportUtils';
 
 const weeklyTrend = [
   { day: 'Mon', disbursed: 820000, collected: 760000 },
@@ -16,6 +19,14 @@ const weeklyTrend = [
 ];
 
 export default function BranchManagerDashboard() {
+  const [selectedPeriod, setSelectedPeriod] = useState(reportPeriods.thisMonth());
+  const [reportData] = useState<CategorizedData[]>([
+    { category: 'On-Time', value: 1240, percentage: 82 },
+    { category: 'Early', value: 180, percentage: 12 },
+    { category: 'Late (1-15 days)', value: 60, percentage: 4 },
+    { category: 'Overdue (15+ days)', value: 20, percentage: 2 },
+  ]);
+
   const overdueLoans = mockLoans.filter(l => l.dpd > 0);
   const activeLoans = mockLoans.filter(l => l.status === 'active');
 
@@ -122,6 +133,75 @@ export default function BranchManagerDashboard() {
             ))}
           </tbody>
         </table>
+      </div>
+
+      {/* PHASE 10: Branch Performance Analytics */}
+      <div style={{ marginTop: 24, marginBottom: 20 }}>
+        <div style={{ marginBottom: 16 }}>
+          <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>
+            📊 Branch Performance Analytics
+          </h2>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            Real-time collection metrics and performance insights
+          </p>
+        </div>
+
+        {/* Summary Cards */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 20 }}>
+          <DashboardSummaryCard
+            title="Branch AUM"
+            value={formatReportCurrency(22000000)}
+            subtitle={`${activeLoans.length} active loans`}
+            trend={{ value: 22000000, percentage: 8, direction: 'up' }}
+            icon={<DollarSign size={20} />}
+            color="primary"
+          />
+          <DashboardSummaryCard
+            title="Active Loans"
+            value={activeLoans.length.toString()}
+            subtitle="Branch portfolio"
+            trend={{ value: activeLoans.length, percentage: 5, direction: 'up' }}
+            icon={<TrendingUp size={20} />}
+            color="success"
+          />
+          <DashboardSummaryCard
+            title="Collection Efficiency"
+            value="94%"
+            subtitle="This month target"
+            trend={{ value: 94, percentage: 3, direction: 'up' }}
+            icon={<Activity size={20} />}
+            color="info"
+          />
+          <DashboardSummaryCard
+            title="Overdue Cases"
+            value={overdueLoans.length.toString()}
+            subtitle="Requiring action"
+            trend={{ value: overdueLoans.length, percentage: 2, direction: 'neutral' }}
+            icon={<AlertTriangle size={20} />}
+            color="warning"
+          />
+        </div>
+
+        {/* Collection Status Report */}
+        <AnalyticsReport
+          title="Collection Status Distribution"
+          data={reportData}
+          selectedPeriod={selectedPeriod}
+          onPeriodChange={setSelectedPeriod}
+          onExport={(data) => {
+            const csv = [
+              ['Category', 'Value', 'Percentage'],
+              ...data.map(d => [d.category, d.value, d.percentage])
+            ].map(row => row.join(',')).join('\n');
+            
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `branch-report-${new Date().toISOString().split('T')[0]}.csv`;
+            a.click();
+          }}
+        />
       </div>
     </div>
   );

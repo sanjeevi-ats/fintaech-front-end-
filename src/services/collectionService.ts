@@ -44,11 +44,15 @@ export interface CollectionEntryRequest {
   amount: number; // In Paise
   remarks?: string;
   collectionDate: string;
+  paymentMode?: string;
+  utrRef?: string;
 }
 
 export interface LoanInstallmentSummary {
   loanId: string;
+  loanCode?: string;
   customerId: string;
+  customerCode?: string;
   customerName: string;
   totalLoanAmount: number;
   totalReceivable: number;
@@ -73,6 +77,30 @@ export interface PaymentHistoryItem {
   paidDate: string;
   paidAmount: number;
   collectedBy: string;
+}
+
+export interface CollectionRequestDto {
+  id: string;
+  requestNumber: string;
+  installmentId: string;
+  installmentCode?: string;
+  installmentNo: number;
+  loanCaseId: string;
+  loanCode?: string;
+  customerName: string;
+  amount: number;
+  paymentMode: string;
+  utrRef: string;
+  remarks: string;
+  status: 'Pending' | 'Approved' | 'Rejected' | 'Cancelled';
+  requestedById: string;
+  requestedByName: string;
+  requestedAt: string;
+  approvedById?: string;
+  approvedByName?: string;
+  approvedAt?: string;
+  previousDueAmount: number;
+  newDueAmount: number;
 }
 
 export const collectionService = {
@@ -150,63 +178,41 @@ export const collectionService = {
   getCollectionHistory: (installmentId: string) =>
     apiClient.get<any[]>(`/api/v1/Collection/history/${installmentId}`),
 
-  // Collection Entry Sheet - Search by Customer Name, Customer ID, or Loan ID
+  // Collection Entry Sheet - Search by Customer Code, Customer Name, Phone, or Loan Code
   searchLoanByCustomer: async (searchTerm: string): Promise<LoanInstallmentSummary[]> => {
     try {
       console.log('🔍 Searching for:', searchTerm);
       
-      const searchQuery = searchTerm.trim().toLowerCase();
+      const searchQuery = searchTerm.trim();
       
-      // Get all customers and loans first
-      const [customers, loans] = await Promise.all([
-        apiClient.get<any[]>('/api/v1/Customers'),
+      // STEP 1: Check if it's a Loan Code search first (e.g. LN-2024-001)
+      // by fetching all loans and checking loanCode
+      const [customerResults, loans] = await Promise.all([
+        apiClient.get<any[]>(`/api/v1/Customers/search?q=${encodeURIComponent(searchQuery)}`),
         apiClient.get<any[]>('/api/v1/LoanCases')
       ]);
 
-      console.log('📊 Data loaded - Customers:', customers.length, 'Loans:', loans.length);
+      console.log('📊 Data loaded - Matched Customers:', customerResults.length, 'Loans:', loans.length);
 
-      // Validate data
-      if (!Array.isArray(customers) || !Array.isArray(loans)) {
-        throw new Error('Invalid data received from API');
-      }
-
-      // Filter out invalid customer/loan objects
-      const validCustomers = customers.filter(c => c && c.id);
       const validLoans = loans.filter(l => l && l.id);
 
-      console.log('✅ Valid data - Customers:', validCustomers.length, 'Loans:', validLoans.length);
-
-      // Enhanced search logic to handle direct Loan ID searches properly
+      // Enhanced search logic
       let matchingLoans: any[] = [];
+      let matchedCustomers = customerResults;
 
-      // STEP 1: Check for direct Loan ID match first (highest priority)
-      const directLoanMatches = validLoans.filter(loan => 
-        loan.id?.toLowerCase().includes(searchQuery) ||
-        loan.id?.toLowerCase() === searchQuery
+      // STEP 1: Check for direct Loan Code match (e.g. LN-2024-001)
+      const loanCodeMatches = validLoans.filter(loan =>
+        loan.loanCode?.toLowerCase().includes(searchQuery.toLowerCase())
       );
 
-      if (directLoanMatches.length > 0) {
-        console.log('🎯 Direct Loan ID match found:', directLoanMatches.length);
-        matchingLoans = directLoanMatches;
-      } else {
-        // STEP 2: If no direct loan match, search by customer details
-        console.log('🔍 No direct loan match, searching by customer details...');
-        
-        const matchingCustomers = validCustomers.filter(customer => {
-          // Safely check each property with null/undefined checks
-          const nameMatch = customer.name?.toLowerCase().includes(searchQuery) || false;
-          const phoneMatch = customer.phone?.includes(searchQuery) || false;
-          const idMatch = customer.id?.toLowerCase().includes(searchQuery) || false;
-          const exactIdMatch = customer.id?.toLowerCase() === searchQuery || false;
-          
-          return nameMatch || phoneMatch || idMatch || exactIdMatch;
-        });
-
-        console.log('👥 Found matching customers:', matchingCustomers.length);
-
-        // Find loans belonging to matching customers
-        matchingLoans = validLoans.filter(loan => 
-          matchingCustomers.some(customer => customer.id === loan.customerId)
+      if (loanCodeMatches.length > 0) {
+        console.log('🎯 Direct Loan Code match found:', loanCodeMatches.length);
+        matchingLoans = loanCodeMatches;
+      } else if (matchedCustomers.length > 0) {
+        // STEP 2: Use server-side matched customers to find their loans
+        console.log('👥 Found matching customers from server search:', matchedCustomers.length);
+        matchingLoans = validLoans.filter(loan =>
+          matchedCustomers.some((c: any) => c.id === loan.customerId)
         );
       }
 
@@ -218,90 +224,68 @@ export const collectionService = {
       for (const loan of matchingLoans) {
         console.log('🔄 Processing loan:', loan.id);
         
-        const customer = validCustomers.find(c => c.id === loan.customerId);
+        // Find customer - prefer from matchedCustomers (has phone), fallback to validLoans lookup
+        const customer = matchedCustomers.find((c: any) => c.id === loan.customerId) ||
+          { id: loan.customerId, name: loan.customerName, code: loan.customerCode };
         
-        // Get installments for this specific loan using the correct API endpoints
+        // Get installments for this specific loan
         let installments: Installment[] = [];
         try {
-          console.log('📡 Fetching installments for loan:', loan.id);
-          
-          // Try primary endpoint first: /api/v1/Installments/loan/{loanId}
-          console.log('📡 Trying primary endpoint: /api/v1/Installments/loan/' + loan.id);
           installments = await apiClient.get<Installment[]>(`/api/v1/Installments/loan/${loan.id}`);
-          console.log('✅ Primary endpoint success - Installments found:', installments.length);
-          
-          // Validate installments data
-          if (!Array.isArray(installments)) {
-            console.warn('⚠️ Primary endpoint returned non-array data, converting...');
-            installments = [];
-          }
+          if (!Array.isArray(installments)) installments = [];
         } catch (instErr) {
-          console.warn('⚠️ Primary installments endpoint failed, trying due endpoint:', instErr);
+          console.warn('⚠️ Installments endpoint failed, trying fallback:', instErr);
           try {
-            // Fallback to due installments with loan filter: /api/v1/Installments/due?loanId={loanId}
-            console.log('📡 Trying fallback endpoint: /api/v1/Installments/due?loanId=' + loan.id);
             const params = new URLSearchParams();
             params.append('loanId', loan.id);
             installments = await apiClient.get<Installment[]>(`/api/v1/Installments/due?${params.toString()}`);
-            console.log('✅ Fallback endpoint success - Installments found:', installments.length);
-            
-            // Validate installments data
-            if (!Array.isArray(installments)) {
-              console.warn('⚠️ Fallback endpoint returned non-array data, converting...');
-              installments = [];
-            }
-          } catch (dueErr) {
-            console.error('❌ Both installment endpoints failed for loan:', loan.id);
-            console.error('Primary error:', instErr);
-            console.error('Fallback error:', dueErr);
+            if (!Array.isArray(installments)) installments = [];
+          } catch {
             installments = [];
           }
         }
 
-        // Calculate installment statistics with proper validation
-        const validInstallments = Array.isArray(installments) ? installments : [];
-        const paidInstallments = validInstallments.filter(inst => inst.status === 'paid').length;
-        const pendingInstallments = validInstallments.filter(inst => inst.status !== 'paid').length;
-        const nextDueInstallment = validInstallments.find(inst => inst.status === 'pending');
+        // Calculate installment statistics
+        const validInstallments = installments;
+        const paidInstallments = validInstallments.filter(i => i.status === 'paid').length;
+        const pendingInstallments = validInstallments.filter(i => i.status !== 'paid').length;
+        const nextDueInstallment = validInstallments.find(i => i.status === 'pending');
         const lastPaidInstallment = validInstallments
-          .filter(inst => inst.status === 'paid')
+          .filter(i => i.status === 'paid')
           .sort((a, b) => new Date(b.collectedDate || '').getTime() - new Date(a.collectedDate || '').getTime())[0];
 
-        // Calculate financial details
         const totalPaidAmount = validInstallments
-          .filter(inst => inst.status === 'paid')
-          .reduce((sum, inst) => sum + (inst.collectedAmount || inst.amount), 0);
+          .filter(i => i.status === 'paid')
+          .reduce((sum, i) => sum + (i.collectedAmount || i.amount), 0);
         
         const totalRemainingAmount = validInstallments
-          .filter(inst => inst.status !== 'paid')
-          .reduce((sum, inst) => sum + inst.amount, 0);
+          .filter(i => i.status !== 'paid')
+          .reduce((sum, i) => sum + i.amount, 0);
 
-        // Calculate current month due (installments due this month)
         const currentDate = new Date();
         const currentMonth = currentDate.getMonth();
         const currentYear = currentDate.getFullYear();
         
         const currentMonthDue = validInstallments
-          .filter(inst => {
-            const dueDate = new Date(inst.dueDate);
+          .filter(i => {
+            const dueDate = new Date(i.dueDate);
             return dueDate.getMonth() === currentMonth && 
                    dueDate.getFullYear() === currentYear &&
-                   inst.status !== 'paid';
+                   i.status !== 'paid';
           })
-          .reduce((sum, inst) => sum + inst.amount, 0);
+          .reduce((sum, i) => sum + i.amount, 0);
 
-        // Calculate overdue amount (past due date and not paid)
-        const overdueInstallments = validInstallments.filter(inst => {
-          if (inst.status === 'paid') return false;
-          const dueDate = new Date(inst.dueDate);
-          return dueDate < currentDate;
+        const overdueInstallmentList = validInstallments.filter(i => {
+          if (i.status === 'paid') return false;
+          return new Date(i.dueDate) < currentDate;
         });
-        
-        const overdueAmount = overdueInstallments.reduce((sum, inst) => sum + inst.amount, 0);
+        const overdueAmount = overdueInstallmentList.reduce((sum, i) => sum + i.amount, 0);
 
-        const summary = {
+        summaries.push({
           loanId: loan.id,
+          loanCode: loan.loanCode,
           customerId: loan.customerId,
+          customerCode: customer?.code || customer?.customerCode || '',
           customerName: customer?.name || 'Unknown Customer',
           totalLoanAmount: loan.principal || 0,
           totalReceivable: loan.totalReceivable || loan.principal || 0,
@@ -312,23 +296,12 @@ export const collectionService = {
           nextDueAmount: nextDueInstallment?.amount || 0,
           nextDueDate: nextDueInstallment?.dueDate,
           installments: validInstallments,
-          // New enhanced fields
           totalPaidAmount,
           totalRemainingAmount,
           currentMonthDue,
           overdueAmount,
-          overdueInstallments: overdueInstallments.length
-        };
-
-        console.log('📋 Loan summary created:', {
-          loanId: summary.loanId,
-          customerName: summary.customerName,
-          totalInstallments: summary.totalInstallments,
-          paidInstallments: summary.paidInstallments,
-          pendingInstallments: summary.pendingInstallments
+          overdueInstallments: overdueInstallmentList.length
         });
-
-        summaries.push(summary);
       }
 
       console.log('🎉 Search completed - Total summaries:', summaries.length);
@@ -412,7 +385,8 @@ export const collectionService = {
         paymentsToRecord.push({
           installmentId: installment.id,
           amountPaid: paymentAmount,
-          mode: 'Cash',
+          mode: request.paymentMode || 'Cash',
+          utrRef: request.utrRef || '',
           remarks: request.remarks
         });
         
@@ -454,5 +428,57 @@ export const collectionService = {
     }
   },
 
+  // Collection Request (Approval Workflow) Methods
+  submitCollectionRequest: async (data: { installmentId: string; amountPaid: number; mode: string; utrRef?: string; remarks?: string }) => {
+    console.log('📝 Submitting collection request for approval:', data);
+    
+    const backendData = {
+      InstallmentId: data.installmentId,
+      AmountPaid: data.amountPaid,
+      Mode: data.mode || 'cash',
+      UtrRef: data.utrRef || '',
+      Remarks: data.remarks || ''
+    };
+    
+    return apiClient.post<CollectionRequestDto>('/api/v1/CollectionRequests', backendData);
+  },
+
+  getPendingCollectionRequests: async (status?: string) => {
+    const url = status 
+      ? `/api/v1/CollectionRequests?status=${status}`
+      : '/api/v1/CollectionRequests?status=Pending';
+    
+    console.log('📋 Fetching pending collection requests...');
+    return apiClient.get<{ success: boolean; data: CollectionRequestDto[] }>(url);
+  },
+
+  getCollectionRequest: async (requestId: string) => {
+    console.log('🔍 Fetching collection request:', requestId);
+    return apiClient.get<{ success: boolean; data: CollectionRequestDto }>(`/api/v1/CollectionRequests/${requestId}`);
+  },
+
+  approveCollectionRequest: async (requestId: string) => {
+    console.log('✅ Approving collection request:', requestId);
+    return apiClient.post<{ success: boolean; message: string; data: CollectionRequestDto }>(
+      `/api/v1/CollectionRequests/${requestId}/approve`,
+      {}
+    );
+  },
+
+  rejectCollectionRequest: async (requestId: string) => {
+    console.log('❌ Rejecting collection request:', requestId);
+    return apiClient.post<{ success: boolean; message: string; data: CollectionRequestDto }>(
+      `/api/v1/CollectionRequests/${requestId}/reject`,
+      {}
+    );
+  },
+
+  cancelCollectionRequest: async (requestId: string) => {
+    console.log('⏹️ Cancelling collection request:', requestId);
+    return apiClient.post<{ success: boolean; message: string; data: CollectionRequestDto }>(
+      `/api/v1/CollectionRequests/${requestId}/cancel`,
+      {}
+    );
+  },
 
 };

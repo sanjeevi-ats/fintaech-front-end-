@@ -4,7 +4,7 @@ import { AuthProvider } from "@/context/AuthContext";
 import AppShell from "@/components/AppShell";
 
 export const metadata: Metadata = {
-  title: "AnnaiTech Solutions — Microfinance ERP",
+  title: "Vettri Finance Pvt Ltd — Microfinance ERP",
   description: "Production-ready Multi-Tenant Microfinance Management System with Equity Engine, Loan Lifecycle, and Double-Entry Accounting",
 };
 

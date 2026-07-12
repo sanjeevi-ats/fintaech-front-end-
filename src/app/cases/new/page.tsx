@@ -1,37 +1,33 @@
 'use client';
-import React, { useState, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   User, CreditCard, Calculator, Calendar, Shield, Users, CheckCircle2,
   ChevronRight, ChevronLeft, AlertTriangle, Info, FileText, Printer,
-  Send, Lock, Plus, Trash2, Upload, Eye
+  Send, Lock, Plus, Trash2, Upload, Eye, Loader2, ArrowRight
 } from 'lucide-react';
-import { calculateLoan, LoanCaseInput, createDisbursementJournal, generateCaseId } from '@/lib/loanEngine';
-import { mockCustomers, mockAgents, addLoanCase, LoanCase } from '@/lib/erpData';
+import { useAuth } from '@/context/AuthContext';
+import { calculateLoan, LoanCaseInput, createRepaymentJournal } from '@/lib/loanEngine';
 import { formatNumber } from '@/lib/utils';
+import { customerService, Customer } from '@/services/customerService';
+import { loanService } from '@/services/loanService';
+import { apiClient } from '@/services/apiClient';
 
-// ─── Step definitions ─────────────────────────────────────────
 const STEPS = [
   { no: 1, label: 'Entity Mapping',     icon: User },
   { no: 2, label: 'Financials',         icon: Calculator },
   { no: 3, label: 'Schedule',           icon: Calendar },
   { no: 4, label: 'Penalty Logic',      icon: AlertTriangle },
-  { no: 5, label: 'Collateral & KYC',   icon: Shield },
-  { no: 6, label: 'Guarantor',          icon: Users },
-  { no: 7, label: 'Review & Disburse',  icon: CheckCircle2 },
+  { no: 5, label: 'Guarantor & KYC',    icon: Shield },
+  { no: 6, label: 'Review & Disburse',  icon: CheckCircle2 },
 ];
 
 interface FormState extends LoanCaseInput {
   customerSearch: string;
   selectedCustomerId: string;
   selectedCustomerName: string;
-  selectedAgentId: string;
-  selectedAgentName: string;
-  loanType: 'daily' | 'weekly' | 'fortnightly' | 'monthly';
-  product: string;
-  // KYC
-  aadhaarFront: string;
-  panFile: string;
-  digitalSig: string;
+  selectedCustomerCode: string;
+  selectedCustomerPhone: string;
+  
   // Guarantor
   guarantorName: string;
   guarantorPhone: string;
@@ -40,20 +36,20 @@ interface FormState extends LoanCaseInput {
   guarantorAddress: string;
   guarantorRelation: string;
   liabilityAgreementSigned: boolean;
+  
   // Collateral
   collateralType: string;
   collateralDesc: string;
   collateralValue: string;
+  documentUrls: string;
 }
 
 const defaultForm: FormState = {
   customerSearch: '',
   selectedCustomerId: '',
   selectedCustomerName: '',
-  selectedAgentId: '',
-  selectedAgentName: '',
-  loanType: 'daily',
-  product: 'Daily 100-Day Loan',
+  selectedCustomerCode: '',
+  selectedCustomerPhone: '',
   financeAmount: 50000,
   interestAmount: 5000,
   fileCharges: 500,
@@ -67,9 +63,6 @@ const defaultForm: FormState = {
   fineAmount: 50,
   fineType: 'per_day',
   fineTriggerDays: 2,
-  aadhaarFront: '',
-  panFile: '',
-  digitalSig: '',
   guarantorName: '',
   guarantorPhone: '',
   guarantorAadhaar: '',
@@ -80,15 +73,26 @@ const defaultForm: FormState = {
   collateralType: 'property',
   collateralDesc: '',
   collateralValue: '',
+  documentUrls: '',
 };
 
 export default function CaseCreationPage() {
+  const { user } = useAuth();
   const [step, setStep] = useState(1);
   const [form, setForm] = useState<FormState>(defaultForm);
   const [calcResult, setCalcResult] = useState<ReturnType<typeof calculateLoan> | null>(null);
-  const [disbursed, setDisbursed] = useState(false);
-  const [disbursedCaseId, setDisbursedCaseId] = useState('');
-  const [showReceipt, setShowReceipt] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  
+  // Flow result
+  const [flowResult, setFlowResult] = useState<{
+    success: boolean;
+    loanId?: string;
+    loanCode?: string;
+    actionTaken: 'submitted_for_approval' | 'direct_disbursed';
+  } | null>(null);
+
+  const isAdmin = user?.role === 'super_admin' || user?.role === 'branch_manager';
 
   const set = (key: keyof FormState, val: any) => setForm(f => ({ ...f, [key]: val }));
 
@@ -111,84 +115,148 @@ export default function CaseCreationPage() {
     setCalcResult(result);
   }, [form]);
 
-  const handleDisburse = () => {
-    if (!calcResult || !calcResult.isValid) return;
-    const je = createDisbursementJournal(
-      calcResult.caseId,
-      calcResult.netDisbursement,
-      calcResult.fileChargesAmount,
-      'Swetha Nair'
-    );
-    if (!je.isBalanced) {
-      alert('⚠️ Journal entry is not balanced. Disbursement blocked (ACID guard).');
+  // Main submission handler
+  const handleSubmission = async (directDisburse: boolean) => {
+    if (!form.selectedCustomerId) {
+      setError('Please select or create a customer first.');
       return;
     }
-    const loanCase: LoanCase = {
-      id: calcResult.caseId,
-      customerId: form.selectedCustomerId || 'CUS-NEW',
-      customerName: form.selectedCustomerName || form.customerSearch,
-      agentId: form.selectedAgentId,
-      agentName: form.selectedAgentName,
-      loanType: form.loanType,
-      product: form.product,
+
+    // Always calculate fresh before submission to ensure we have valid data
+    const currentCalcResult = calculateLoan({
       financeAmount: Number(form.financeAmount),
       interestAmount: Number(form.interestAmount),
       fileCharges: Number(form.fileCharges),
       fileChargesType: form.fileChargesType,
-      netDisbursement: calcResult.netDisbursement,
-      totalReceivable: calcResult.totalReceivable,
+      chargesDeductedFrom: form.chargesDeductedFrom,
       numberOfInstallments: Number(form.numberOfInstallments),
       initialInstallment: Number(form.initialInstallment),
       restInstallment: Number(form.restInstallment),
       startDate: form.startDate,
-      endDate: calcResult.endDate,
       frequency: form.frequency,
       fineAmount: Number(form.fineAmount),
       fineType: form.fineType,
       fineTriggerDays: Number(form.fineTriggerDays),
-      schedule: calcResult.schedule,
-      guarantors: form.guarantorName ? [{
-        id: `GUA-${Date.now()}`,
-        caseId: calcResult.caseId,
-        name: form.guarantorName,
-        phone: form.guarantorPhone,
-        aadhaar: form.guarantorAadhaar || 'XXXX-XXXX-XXXX',
-        pan: form.guarantorPan || 'XXXXXXXXXX',
-        address: form.guarantorAddress,
-        relationship: form.guarantorRelation,
-        liabilityAgreementSigned: form.liabilityAgreementSigned,
-        signedAt: new Date().toISOString(),
-      }] : [],
-      collaterals: form.collateralDesc ? [{
-        id: `COL-${Date.now()}`,
-        caseId: calcResult.caseId,
-        type: form.collateralType as any,
-        description: form.collateralDesc,
-        estimatedValue: Number(form.collateralValue) || 0,
-        documents: [],
-      }] : [],
-      status: 'active',
-      disbursedAt: new Date().toISOString(),
-      disbursedBy: 'Swetha Nair',
-      journalEntries: [je],
-      auditLog: [],
-      createdAt: new Date().toISOString(),
-    };
-    addLoanCase(loanCase);
-    setDisbursedCaseId(calcResult.caseId);
-    setDisbursed(true);
+    });
+
+    // Store the calculation result for later use
+    setCalcResult(currentCalcResult);
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      // 1. Create the loan case in DRAFT status
+      // Backend expects Principal (financeAmount), InterestAmount, and ProcessingFees in Paise
+      const createReq = {
+        customerId: form.selectedCustomerId,
+        principal: Math.round(Number(form.financeAmount) * 100),
+        interestAmount: Math.round(Number(form.interestAmount) * 100),
+        processingFees: Math.round(currentCalcResult.fileChargesAmount * 100),
+        documentUrls: form.documentUrls
+      };
+
+      console.log('Sending CreateLoanRequest:', createReq);
+      const loan = await loanService.create(createReq);
+      console.log('Created loan:', loan);
+
+      if (!loan || !loan.id) {
+        throw new Error('Failed to create loan case in database.');
+      }
+
+      // 2. Generate repayment installments in database
+      console.log(`Generating ${form.numberOfInstallments} installments for loan: ${loan.id}`);
+      await apiClient.post(`/api/v1/Installments/generate/${loan.id}?count=${form.numberOfInstallments}`, {});
+
+      if (directDisburse && isAdmin) {
+        // Direct disburse flow: Approve first, then Disburse
+        console.log('Direct disburse: Approving...');
+        await loanService.approveLoan(loan.id);
+
+        console.log('Direct disburse: Disbursing...');
+        await loanService.disburse(loan.id);
+
+        setFlowResult({
+          success: true,
+          loanId: loan.id,
+          loanCode: loan.loanCode || 'LN-NEW',
+          actionTaken: 'direct_disbursed'
+        });
+      } else {
+        // Submit for approval workflow (Default for Loan Officer)
+        console.log('Submitting for approval...');
+        await loanService.submitLoanForApproval(loan.id);
+
+        setFlowResult({
+          success: true,
+          loanId: loan.id,
+          loanCode: loan.loanCode || 'LN-NEW',
+          actionTaken: 'submitted_for_approval'
+        });
+      }
+    } catch (e: any) {
+      console.error(e);
+      setError(e.message || 'Workflow action failed. Please verify API connection.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
-  if (disbursed) {
-    return <DisburseSuccess caseId={disbursedCaseId} calcResult={calcResult!} form={form} onNew={() => { setDisbursed(false); setStep(1); setForm(defaultForm); setCalcResult(null); }} />;
+  if (flowResult) {
+    return (
+      <div className="fade-in-up" style={{ maxWidth: 700, margin: '40px auto', textAlign: 'center' }}>
+        <div style={{ fontSize: 56, marginBottom: 16 }}>
+          {flowResult.actionTaken === 'direct_disbursed' ? '💸' : '⏳'}
+        </div>
+        <div style={{ fontSize: 24, fontWeight: 900, color: '#34d399', marginBottom: 8 }}>
+          {flowResult.actionTaken === 'direct_disbursed' 
+            ? 'Loan Case Disbursed Successfully!' 
+            : 'Loan Submitted for Approval!'}
+        </div>
+        <p style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 24 }}>
+          {flowResult.actionTaken === 'direct_disbursed'
+            ? 'Installment schedule generated • Double-entry journals posted'
+            : 'Routed to Branch Managers & Admins for verification'}
+        </p>
+
+        <div className="card" style={{ textAlign: 'left', marginBottom: 20 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14 }}>Loan Case Details</div>
+          {[
+            ['Loan Code', flowResult.loanCode],
+            ['Customer', form.selectedCustomerName],
+            ['Finance Amount', `₹${Number(form.financeAmount).toLocaleString()}`],
+            ['Interest Amount', `₹${Number(form.interestAmount).toLocaleString()}`],
+            ['Installments', `${form.numberOfInstallments} payments`],
+            ['Action Taken', flowResult.actionTaken === 'direct_disbursed' ? 'Direct Disbursement' : 'Submitted for Approval'],
+            ['Date', new Date().toLocaleDateString('en-IN')]
+          ].map(([label, val]) => (
+            <div key={label} style={{ display: 'flex', padding: '10px 0', borderBottom: '1px solid var(--bg-border)', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{label}</span>
+              <span style={{ fontSize: 12, fontWeight: 700 }}>{val}</span>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+          {flowResult.actionTaken === 'direct_disbursed' && (
+            <button className="btn btn-secondary" onClick={() => window.print()}><Printer size={13} /> Print Agreement</button>
+          )}
+          <button className="btn btn-primary" onClick={() => { setFlowResult(null); setStep(1); setForm(defaultForm); setCalcResult(null); }}>
+            <Plus size={13} /> Create Another Case
+          </button>
+        </div>
+      </div>
+    );
   }
 
   return (
     <div className="fade-in-up" style={{ maxWidth: 1100, margin: '0 auto' }}>
       {/* Header */}
       <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 800 }}>New Loan Case — Case Creation Wizard</h1>
-        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>Multi-step ACID-compliant loan origination with immutable schedule generation</p>
+        <h1 style={{ fontSize: 22, fontWeight: 800 }}>New Loan Case — Repayment & Verification</h1>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>
+          Onboard borrower, verify KYC, generate immutable payment plan & submit for branch authorization
+        </p>
       </div>
 
       {/* Step indicator */}
@@ -221,15 +289,28 @@ export default function CaseCreationPage() {
         })}
       </div>
 
+      {error && (
+        <div className="alert alert-danger" style={{ marginBottom: 16, borderRadius: 10 }}>
+          <AlertTriangle size={13} /><span>{error}</span>
+        </div>
+      )}
+
       {/* Step Content */}
       <div className="card" style={{ marginBottom: 16, minHeight: 400 }}>
         {step === 1 && <Step1EntityMapping form={form} set={set} />}
         {step === 2 && <Step2Financials form={form} set={set} calcResult={calcResult} onCalculate={runCalculate} />}
         {step === 3 && <Step3Schedule calcResult={calcResult} form={form} />}
         {step === 4 && <Step4Penalty form={form} set={set} />}
-        {step === 5 && <Step5KYC form={form} set={set} />}
-        {step === 6 && <Step6Guarantor form={form} set={set} />}
-        {step === 7 && calcResult && <Step7Review form={form} calcResult={calcResult} onDisburse={handleDisburse} />}
+        {step === 5 && <Step5GuarantorKYC form={form} set={set} />}
+        {step === 6 && calcResult && (
+          <Step6Review 
+            form={form} 
+            calcResult={calcResult} 
+            isAdmin={isAdmin}
+            submitting={submitting}
+            onSubmit={handleSubmission} 
+          />
+        )}
       </div>
 
       {/* Navigation */}
@@ -253,76 +334,125 @@ export default function CaseCreationPage() {
 
 // ─── Step 1: Entity Mapping ───────────────────────────────────
 function Step1EntityMapping({ form, set }: { form: FormState; set: (k: keyof FormState, v: any) => void }) {
-  const [customerFilter, setCustomerFilter] = useState('');
-  const filtered = mockCustomers.filter(c => c.name.toLowerCase().includes(customerFilter.toLowerCase()) || c.phone.includes(customerFilter));
+  const [searchQuery, setSearchQuery] = useState('');
+  const [results, setResults] = useState<Customer[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [creating, setCreating] = useState(false);
+  
+  const [newCustomer, setNewCustomer] = useState({ name: '', phone: '' });
+
+  // Handle customer search API
+  useEffect(() => {
+    if (searchQuery.trim().length < 2) {
+      setResults([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const data = await customerService.searchByCode(searchQuery);
+        setResults(data);
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setSearching(false);
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  const handleCreateCustomer = async () => {
+    if (!newCustomer.name || !newCustomer.phone) return;
+    setCreating(true);
+    try {
+      const res = await customerService.create(newCustomer);
+      set('selectedCustomerId', res.id);
+      set('selectedCustomerName', res.name);
+      set('selectedCustomerCode', res.code || '');
+      set('selectedCustomerPhone', res.phone);
+      setNewCustomer({ name: '', phone: '' });
+    } catch (err) {
+      console.error(err);
+      alert('Failed to register borrower.');
+    } finally {
+      setCreating(false);
+    }
+  };
 
   return (
     <div>
-      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 18 }}>Step 1 — Entity Mapping</div>
+      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 18 }}>Step 1 — Borrower Search & Onboarding</div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-        {/* Customer Selection */}
+        {/* Customer Lookup */}
         <div>
-          <div className="input-label">Customer Name / Phone</div>
-          <input className="input" placeholder="Search customer..." value={customerFilter}
-            onChange={e => { setCustomerFilter(e.target.value); set('customerSearch', e.target.value); }} />
-          {customerFilter && (
-            <div style={{ border: '1px solid var(--bg-border)', borderRadius: 8, marginTop: 4, overflow: 'hidden' }}>
-              {filtered.slice(0, 5).map(c => (
-                <div key={c.id} onClick={() => { set('selectedCustomerId', c.id); set('selectedCustomerName', c.name); set('customerSearch', c.name); setCustomerFilter(''); }}
-                  className="nav-item" style={{ borderRadius: 0, fontSize: 12 }}>
-                  <div>
-                    <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{c.name}</div>
-                    <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{c.id} · {c.phone} · {c.aadhaar}</div>
+          <div className="input-label">Search Existing Borrowers</div>
+          <input 
+            className="input" 
+            placeholder="Type name, phone, or customer code..." 
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)} 
+          />
+          
+          {searching && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>Searching Database...</div>}
+          
+          {results.length > 0 && (
+            <div style={{ border: '1px solid var(--bg-border)', borderRadius: 8, marginTop: 4, overflow: 'hidden', background: 'var(--bg-elevated)' }}>
+              {results.map(c => (
+                <div key={c.id} onClick={() => { 
+                  set('selectedCustomerId', c.id); 
+                  set('selectedCustomerName', c.name); 
+                  set('selectedCustomerCode', c.code || '');
+                  set('selectedCustomerPhone', c.phone);
+                  setSearchQuery(''); 
+                  setResults([]);
+                }}
+                  className="nav-item" style={{ borderRadius: 0, fontSize: 12, padding: '10px 14px', cursor: 'pointer' }}>
+                  <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{c.name}</div>
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
+                    Code: {c.code || 'N/A'} • Phone: {c.phone}
                   </div>
                 </div>
               ))}
-              <div className="nav-item" style={{ borderRadius: 0, fontSize: 12, borderTop: '1px solid var(--bg-border)' }}
-                onClick={() => { set('selectedCustomerName', customerFilter); setCustomerFilter(''); }}>
-                <Plus size={11} /> Create new customer "{customerFilter}"
+            </div>
+          )}
+
+          {form.selectedCustomerId && (
+            <div style={{ marginTop: 12, padding: '12px 14px', background: 'rgba(16,185,129,0.06)', borderRadius: 8, border: '1px solid rgba(16,185,129,0.2)' }}>
+              <div style={{ fontSize: 11, color: '#10b981', fontWeight: 700, textTransform: 'uppercase' }}>Selected Borrower</div>
+              <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--text-primary)', marginTop: 4 }}>{form.selectedCustomerName}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                Code: {form.selectedCustomerCode || '—'} • Phone: {form.selectedCustomerPhone}
               </div>
             </div>
           )}
-          {form.selectedCustomerName && !customerFilter && (
-            <div style={{ marginTop: 8, padding: '10px 12px', background: 'rgba(16,185,129,0.1)', borderRadius: 8, border: '1px solid rgba(16,185,129,0.2)', display: 'flex', alignItems: 'center', gap: 8 }}>
-              <CheckCircle2 size={14} color="#34d399" />
-              <span style={{ fontSize: 12, color: '#34d399', fontWeight: 600 }}>{form.selectedCustomerName}</span>
-              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{form.selectedCustomerId}</span>
-            </div>
-          )}
         </div>
 
-        {/* Agent Selection */}
-        <div>
-          <div className="input-label">Assigned Agent</div>
-          <select className="select" style={{ width: '100%' }} value={form.selectedAgentId}
-            onChange={e => { const a = mockAgents.find(ag => ag.id === e.target.value); set('selectedAgentId', e.target.value); set('selectedAgentName', a?.name || ''); }}>
-            <option value="">-- Select Agent --</option>
-            {mockAgents.map(a => <option key={a.id} value={a.id}>{a.name} ({a.branch}) — {a.commissionRate}%</option>)}
-          </select>
-        </div>
-
-        {/* Loan Type */}
-        <div>
-          <div className="input-label">Loan Type / Frequency</div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            {(['daily', 'weekly', 'fortnightly', 'monthly'] as const).map(t => (
-              <button key={t} className={`btn btn-sm ${form.loanType === t ? 'btn-primary' : 'btn-secondary'}`}
-                onClick={() => { set('loanType', t); set('frequency', t); }}>
-                {t.charAt(0).toUpperCase() + t.slice(1)}
-              </button>
-            ))}
+        {/* Quick Create Borrower */}
+        <div style={{ borderLeft: '1px solid var(--bg-border)', paddingLeft: 20 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12 }}>Register New Borrower</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <input 
+              className="input" 
+              placeholder="Borrower Full Name" 
+              value={newCustomer.name} 
+              onChange={e => setNewCustomer(prev => ({ ...prev, name: e.target.value }))}
+            />
+            <input 
+              className="input" 
+              placeholder="10-Digit Mobile Number" 
+              value={newCustomer.phone}
+              onChange={e => setNewCustomer(prev => ({ ...prev, phone: e.target.value }))}
+            />
+            <button 
+              className="btn btn-secondary" 
+              onClick={handleCreateCustomer} 
+              disabled={creating || !newCustomer.name || !newCustomer.phone}
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
+            >
+              {creating ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
+              Onboard & Select Borrower
+            </button>
           </div>
-        </div>
-
-        {/* Product */}
-        <div>
-          <div className="input-label">Loan Product</div>
-          <select className="select" style={{ width: '100%' }} value={form.product} onChange={e => set('product', e.target.value)}>
-            <option>Daily 100-Day Loan</option>
-            <option>Weekly 26-Week Loan</option>
-            <option>Monthly 12-Month Loan</option>
-            <option>Monthly 24-Month Loan</option>
-          </select>
         </div>
       </div>
     </div>
@@ -333,15 +463,15 @@ function Step1EntityMapping({ form, set }: { form: FormState; set: (k: keyof For
 function Step2Financials({ form, set, calcResult, onCalculate }: any) {
   return (
     <div>
-      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 18 }}>Step 2 — Financials & Calculation Engine</div>
+      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 18 }}>Step 2 — Financials & Repayment Calculation</div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
         {[
-          { label: 'Finance Amount (₹)', key: 'financeAmount', placeholder: '50000' },
-          { label: 'Interest Amount (₹)', key: 'interestAmount', placeholder: '5000' },
+          { label: 'Loan Amount / Principal (₹)', key: 'financeAmount', placeholder: '50000' },
+          { label: 'Interest Charged (₹)', key: 'interestAmount', placeholder: '5000' },
           { label: 'Number of Installments', key: 'numberOfInstallments', placeholder: '100' },
-          { label: 'Initial Installment (₹)', key: 'initialInstallment', placeholder: '600 (first payment)' },
-          { label: 'Rest Installment (₹)', key: 'restInstallment', placeholder: '550 (remaining payments)' },
-          { label: 'File Charges (₹/%)', key: 'fileCharges', placeholder: '500' },
+          { label: 'First Installment (₹)', key: 'initialInstallment', placeholder: '600' },
+          { label: 'Subsequent Installments (₹)', key: 'restInstallment', placeholder: '545' },
+          { label: 'Processing Fees (₹)', key: 'fileCharges', placeholder: '500' },
         ].map(f => (
           <div key={f.key}>
             <div className="input-label">{f.label}</div>
@@ -350,55 +480,39 @@ function Step2Financials({ form, set, calcResult, onCalculate }: any) {
           </div>
         ))}
         <div>
-          <div className="input-label">File Charges Type</div>
+          <div className="input-label">File Charges Deduct</div>
           <div style={{ display: 'flex', gap: 8 }}>
-            {(['fixed', 'percentage'] as const).map(t => (
-              <button key={t} className={`btn btn-sm ${form.fileChargesType === t ? 'btn-primary' : 'btn-secondary'}`} onClick={() => set('fileChargesType', t)}>
-                {t === 'fixed' ? '₹ Fixed' : '% Rate'}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div>
-          <div className="input-label">Charges Deducted From</div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            {([['disbursement', 'Disbursement'], ['loan', 'Added to Loan']] as const).map(([val, label]) => (
-              <button key={val} className={`btn btn-sm ${form.chargesDeductedFrom === val ? 'btn-primary' : 'btn-secondary'}`} onClick={() => set('chargesDeductedFrom', val)}>
+            {([['disbursement', 'Deduct from Payout'], ['loan', 'Add to Total Due']] as const).map(([val, label]) => (
+              <button key={val} type="button" className={`btn btn-sm ${form.chargesDeductedFrom === val ? 'btn-primary' : 'btn-secondary'}`} onClick={() => set('chargesDeductedFrom', val)}>
                 {label}
               </button>
             ))}
           </div>
         </div>
         <div>
-          <div className="input-label">Start Date</div>
+          <div className="input-label">Disbursement Date</div>
           <input className="input" type="date" value={form.startDate} onChange={e => set('startDate', e.target.value)} />
         </div>
       </div>
 
-      <button className="btn btn-primary" style={{ marginTop: 20 }} onClick={onCalculate}>
-        <Calculator size={14} /> Calculate Loan Schedule
+      <button className="btn btn-primary" style={{ marginTop: 20, display: 'flex', alignItems: 'center', gap: 6 }} onClick={onCalculate}>
+        <Calculator size={14} /> Run Calculation Engine
       </button>
 
       {calcResult && (
         <div style={{ marginTop: 16, display: 'flex', gap: 12 }}>
           {[
             { label: 'Total Receivable', val: `₹${calcResult.totalReceivable.toLocaleString()}`, color: '#a5b4fc' },
-            { label: 'Net Disbursement', val: `₹${calcResult.netDisbursement.toLocaleString()}`, color: '#34d399' },
-            { label: 'File Charges', val: `₹${calcResult.fileChargesAmount.toLocaleString()}`, color: '#fbbf24' },
-            { label: 'Checksum', val: `₹${calcResult.checksum.toLocaleString()}`, color: calcResult.isValid ? '#34d399' : '#f87171' },
-            { label: 'End Date', val: calcResult.endDate, color: '#22d3ee' },
+            { label: 'Net Payout', val: `₹${calcResult.netDisbursement.toLocaleString()}`, color: '#34d399' },
+            { label: 'Processing Fees', val: `₹${calcResult.fileChargesAmount.toLocaleString()}`, color: '#fbbf24' },
+            { label: 'Checksum Verification', val: calcResult.isValid ? 'Verified ✓' : 'Mismatch ✗', color: calcResult.isValid ? '#34d399' : '#f87171' },
+            { label: 'Maturity Date', val: calcResult.endDate, color: '#22d3ee' },
           ].map((item, i) => (
             <div key={i} style={{ flex: 1, background: 'var(--bg-elevated)', borderRadius: 10, padding: '10px 14px' }}>
               <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>{item.label}</div>
               <div style={{ fontSize: 16, fontWeight: 800, color: item.color }}>{item.val}</div>
             </div>
           ))}
-        </div>
-      )}
-      {calcResult && !calcResult.isValid && (
-        <div className="alert alert-danger" style={{ marginTop: 12, borderRadius: 10 }}>
-          <AlertTriangle size={13} />
-          <div>{calcResult.validationErrors.map((e: string, i: number) => <div key={i}>{e}</div>)}</div>
         </div>
       )}
     </div>
@@ -410,49 +524,39 @@ function Step3Schedule({ calcResult, form }: any) {
   if (!calcResult) return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 200, gap: 12 }}>
       <AlertTriangle size={32} color="#f59e0b" />
-      <div style={{ color: 'var(--text-muted)' }}>Go back to Step 2 and click "Calculate Loan Schedule" first.</div>
+      <div style={{ color: 'var(--text-muted)' }}>Go back to Step 2 and run calculation engine first.</div>
     </div>
   );
-
-  const schedule = calcResult.schedule;
-  const show = schedule.slice(0, 20);
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div style={{ fontSize: 16, fontWeight: 700 }}>Step 3 — Repayment Schedule (Immutable)</div>
-        <div className="alert alert-info" style={{ padding: '6px 12px', borderRadius: 8, fontSize: 11 }}>
-          <Lock size={11} /> Once disbursed, schedule is locked
+        <div style={{ fontSize: 16, fontWeight: 700 }}>Step 3 — Generated Repayment Plan</div>
+        <div style={{ fontSize: 11, background: 'rgba(99,102,241,0.1)', color: '#a5b4fc', padding: '4px 10px', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 4 }}>
+          <Lock size={12} /> Schedule will lock on approval
         </div>
       </div>
-      <div style={{ display: 'flex', gap: 16, marginBottom: 16 }}>
-        {[
-          { label: 'Total Installments', val: schedule.length },
-          { label: 'Total Receivable', val: `₹${calcResult.totalReceivable.toLocaleString()}` },
-          { label: 'Frequency', val: form.frequency },
-          { label: 'End Date', val: calcResult.endDate },
-        ].map((s, i) => (
-          <div key={i} style={{ flex: 1, background: 'var(--bg-elevated)', borderRadius: 8, padding: '8px 14px' }}>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 3 }}>{s.label}</div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>{s.val}</div>
-          </div>
-        ))}
-      </div>
-      <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+      <div style={{ maxHeight: 300, overflowY: 'auto' }}>
         <table className="data-table" style={{ fontSize: 12 }}>
-          <thead><tr><th>#</th><th>Due Date</th><th>Amount (₹)</th><th>Principal</th><th>Interest</th></tr></thead>
+          <thead>
+            <tr><th>No</th><th>Due Date</th><th>Installment Amount</th><th>Principal Component</th><th>Interest Component</th></tr>
+          </thead>
           <tbody>
-            {show.map((r: any) => (
+            {calcResult.schedule.slice(0, 15).map((r: any) => (
               <tr key={r.no}>
-                <td style={{ color: 'var(--text-muted)' }}>{r.no}</td>
+                <td>#{r.no}</td>
                 <td className="mono">{r.dueDate}</td>
-                <td style={{ fontWeight: 700, color: '#fbbf24' }}>₹{r.amount.toLocaleString()}</td>
-                <td>₹{r.principal.toLocaleString()}</td>
-                <td style={{ color: '#f87171' }}>₹{r.interest.toLocaleString()}</td>
+                <td style={{ fontWeight: 700, color: '#fbbf24' }}>₹{r.amount}</td>
+                <td>₹{r.principal}</td>
+                <td style={{ color: '#f87171' }}>₹{r.interest}</td>
               </tr>
             ))}
-            {schedule.length > 20 && (
-              <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 11, padding: 12 }}>... and {schedule.length - 20} more installments</td></tr>
+            {calcResult.schedule.length > 15 && (
+              <tr>
+                <td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 12 }}>
+                  ... and {calcResult.schedule.length - 15} more installments
+                </td>
+              </tr>
             )}
           </tbody>
         </table>
@@ -465,98 +569,138 @@ function Step3Schedule({ calcResult, form }: any) {
 function Step4Penalty({ form, set }: any) {
   return (
     <div>
-      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 18 }}>Step 4 — Penalty & Fine Logic</div>
-      <div className="alert alert-warning" style={{ marginBottom: 20, borderRadius: 10 }}>
-        <Info size={13} />
-        <span style={{ fontSize: 12 }}>Any change to fine amount or installment date after disbursement will be logged in the Audit Trail with User ID and Reason.</span>
-      </div>
+      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 18 }}>Step 4 — Automated Penalty Terms</div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
         <div>
-          <div className="input-label">Fine Amount (₹)</div>
+          <div className="input-label">Late Fine / Penalty (₹)</div>
           <input className="input" type="number" value={form.fineAmount} onChange={e => set('fineAmount', e.target.value)} />
         </div>
         <div>
-          <div className="input-label">Fine Type</div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button className={`btn btn-sm ${form.fineType === 'per_day' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => set('fineType', 'per_day')}>Per Day</button>
-            <button className={`btn btn-sm ${form.fineType === 'one_time' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => set('fineType', 'one_time')}>One-Time</button>
-          </div>
-        </div>
-        <div>
-          <div className="input-label">Grace Period (days before fine triggers)</div>
+          <div className="input-label">Grace Period before fine triggers (Days)</div>
           <input className="input" type="number" value={form.fineTriggerDays} onChange={e => set('fineTriggerDays', e.target.value)} />
         </div>
-        <div>
-          <div style={{ background: 'var(--bg-elevated)', borderRadius: 10, padding: '14px 16px' }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 8 }}>Fine Preview</div>
-            {form.fineType === 'per_day' ? (
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                If overdue by <strong>10 days</strong> (after {form.fineTriggerDays}-day grace):
-                <div style={{ fontSize: 18, fontWeight: 800, color: '#f87171', marginTop: 6 }}>
-                  Fine = ₹{Number(form.fineAmount) * (10 - Number(form.fineTriggerDays))}
-                </div>
-              </div>
-            ) : (
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                One-time fine after {form.fineTriggerDays}-day grace:
-                <div style={{ fontSize: 18, fontWeight: 800, color: '#f87171', marginTop: 6 }}>Fine = ₹{Number(form.fineAmount)}</div>
-              </div>
-            )}
-          </div>
-        </div>
       </div>
     </div>
   );
 }
 
-// ─── Step 5: KYC & Collateral ─────────────────────────────────
-function Step5KYC({ form, set }: any) {
+// ─── Step 5: Guarantor & KYC ─────────────────────────────────
+function Step5GuarantorKYC({ form, set }: any) {
+  const [guarantorAadhaarFile, setGuarantorAadhaarFile] = useState<string | null>(null);
+  const [guarantorPanFile, setGuarantorPanFile] = useState<string | null>(null);
+  
+  const [uploadingAadhaar, setUploadingAadhaar] = useState(false);
+  const [uploadingPan, setUploadingPan] = useState(false);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, field: 'aadhaar' | 'pan') => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (field === 'aadhaar') setUploadingAadhaar(true);
+    else setUploadingPan(true);
+
+    try {
+      const formData = new FormData();
+      formData.append('files', file);
+
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5177';
+      const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+
+      const response = await fetch(`${API_URL}/api/v1/LoanCases/upload-temp`, {
+        method: 'POST',
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to upload file');
+      }
+
+      const res = await response.json();
+
+      if (res.urls?.[0]) {
+        const uploadedUrl = res.urls[0];
+        const currentUrls = form.documentUrls ? form.documentUrls.split(',') : [];
+        currentUrls.push(uploadedUrl);
+        set('documentUrls', currentUrls.join(','));
+        
+        if (field === 'aadhaar') {
+          setGuarantorAadhaarFile(file.name);
+        } else {
+          setGuarantorPanFile(file.name);
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Failed to upload document.');
+    } finally {
+      if (field === 'aadhaar') setUploadingAadhaar(false);
+      else setUploadingPan(false);
+    }
+  };
+
   return (
     <div>
-      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 18 }}>Step 5 — Collateral & Extended KYC</div>
+      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 18 }}>Step 5 — Guarantor Verification & KYC Attachments</div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-        {/* KYC documents */}
+        {/* Guarantor Details */}
         <div>
-          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12, color: 'var(--text-primary)' }}>Customer KYC Documents</div>
-          {[
-            { label: 'Aadhaar Card (Front)', key: 'aadhaarFront' },
-            { label: 'PAN Card', key: 'panFile' },
-            { label: 'Digital Signature', key: 'digitalSig' },
-          ].map(f => (
-            <div key={f.key} style={{ marginBottom: 12 }}>
-              <div className="input-label">{f.label}</div>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <div style={{ flex: 1, border: '2px dashed var(--bg-border)', borderRadius: 8, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
-                  onClick={() => set(f.key, `uploaded_${f.key}.pdf`)}>
-                  <Upload size={14} color="var(--text-muted)" />
-                  <span style={{ fontSize: 12, color: (form as any)[f.key] ? '#34d399' : 'var(--text-muted)' }}>
-                    {(form as any)[f.key] ? `✓ ${(form as any)[f.key]}` : 'Click to upload / capture'}
-                  </span>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12 }}>Guarantor Information</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <input className="input" placeholder="Guarantor Name" value={form.guarantorName} onChange={e => set('guarantorName', e.target.value)} />
+            <input className="input" placeholder="Mobile Number" value={form.guarantorPhone} onChange={e => set('guarantorPhone', e.target.value)} />
+            <input className="input" placeholder="Aadhaar Card Number" value={form.guarantorAadhaar} onChange={e => set('guarantorAadhaar', e.target.value)} />
+            <input className="input" placeholder="PAN Card Number" value={form.guarantorPan} onChange={e => set('guarantorPan', e.target.value)} />
+          </div>
+        </div>
+
+        {/* KYC Files Upload */}
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12 }}>KYC Document Attachments</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ position: 'relative' }}>
+              <input
+                type="file"
+                id="aadhaar-upload-input"
+                style={{ display: 'none' }}
+                onChange={(e) => handleFileUpload(e, 'aadhaar')}
+              />
+              <label
+                htmlFor="aadhaar-upload-input"
+                style={{ border: '2px dashed var(--bg-border)', borderRadius: 8, padding: 16, textAlign: 'center', cursor: 'pointer', display: 'block' }}
+              >
+                {uploadingAadhaar ? (
+                  <Loader2 size={20} className="animate-spin" style={{ margin: '0 auto 8px', color: '#6366f1' }} />
+                ) : (
+                  <Upload size={20} style={{ margin: '0 auto 8px', color: 'var(--text-muted)' }} />
+                )}
+                <div style={{ fontSize: 12, color: guarantorAadhaarFile ? '#10b981' : 'var(--text-muted)' }}>
+                  {uploadingAadhaar ? 'Uploading file...' : guarantorAadhaarFile ? `✓ ${guarantorAadhaarFile}` : 'Upload Borrower & Guarantor Aadhaar'}
                 </div>
-              </div>
+              </label>
             </div>
-          ))}
-        </div>
-        {/* Collateral */}
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12, color: 'var(--text-primary)' }}>Collateral Details</div>
-          <div style={{ marginBottom: 12 }}>
-            <div className="input-label">Collateral Type</div>
-            <select className="select" style={{ width: '100%' }} value={form.collateralType} onChange={e => set('collateralType', e.target.value)}>
-              <option value="property">Property / Land</option>
-              <option value="vehicle">Vehicle (RC Book)</option>
-              <option value="gold">Gold / Jewellery</option>
-              <option value="fd">Fixed Deposit</option>
-              <option value="other">Other</option>
-            </select>
-          </div>
-          <div style={{ marginBottom: 12 }}>
-            <div className="input-label">Description</div>
-            <input className="input" placeholder="e.g. Residential flat at 12A Lokhandwala..." value={form.collateralDesc} onChange={e => set('collateralDesc', e.target.value)} />
-          </div>
-          <div>
-            <div className="input-label">Estimated Value (₹)</div>
-            <input className="input" type="number" placeholder="e.g. 2500000" value={form.collateralValue} onChange={e => set('collateralValue', e.target.value)} />
+            
+            <div style={{ position: 'relative' }}>
+              <input
+                type="file"
+                id="pan-upload-input"
+                style={{ display: 'none' }}
+                onChange={(e) => handleFileUpload(e, 'pan')}
+              />
+              <label
+                htmlFor="pan-upload-input"
+                style={{ border: '2px dashed var(--bg-border)', borderRadius: 8, padding: 16, textAlign: 'center', cursor: 'pointer', display: 'block' }}
+              >
+                {uploadingPan ? (
+                  <Loader2 size={20} className="animate-spin" style={{ margin: '0 auto 8px', color: '#6366f1' }} />
+                ) : (
+                  <Upload size={20} style={{ margin: '0 auto 8px', color: 'var(--text-muted)' }} />
+                )}
+                <div style={{ fontSize: 12, color: guarantorPanFile ? '#10b981' : 'var(--text-muted)' }}>
+                  {uploadingPan ? 'Uploading file...' : guarantorPanFile ? `✓ ${guarantorPanFile}` : 'Upload Borrower & Guarantor PAN Card'}
+                </div>
+              </label>
+            </div>
           </div>
         </div>
       </div>
@@ -564,172 +708,76 @@ function Step5KYC({ form, set }: any) {
   );
 }
 
-// ─── Step 6: Guarantor ────────────────────────────────────────
-function Step6Guarantor({ form, set }: any) {
+// ─── Step 6: Review & Disburse/Submit ─────────────────────────
+function Step6Review({ form, calcResult, isAdmin, submitting, onSubmit }: any) {
   return (
     <div>
-      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 18 }}>Step 6 — Guarantor Management</div>
-      <div className="alert alert-info" style={{ marginBottom: 16, borderRadius: 10 }}>
-        <Users size={13} />
-        <span style={{ fontSize: 12 }}>Guarantor details are stored as a separate legal entity linked to the Case ID. A Liability Agreement PDF is auto-generated upon confirmation.</span>
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        {[
-          { label: 'Guarantor Full Name', key: 'guarantorName', placeholder: 'As per Aadhaar' },
-          { label: 'Phone Number', key: 'guarantorPhone', placeholder: '10-digit' },
-          { label: 'Aadhaar Number', key: 'guarantorAadhaar', placeholder: '12-digit' },
-          { label: 'PAN Number', key: 'guarantorPan', placeholder: 'ABCDE1234F' },
-          { label: 'Full Address', key: 'guarantorAddress', placeholder: 'Guarantor residential address' },
-        ].map(f => (
-          <div key={f.key}>
-            <div className="input-label">{f.label}</div>
-            <input className="input" placeholder={f.placeholder} value={(form as any)[f.key]} onChange={e => set(f.key, e.target.value)} />
-          </div>
-        ))}
+      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 18 }}>Step 6 — Final Review & Verification</div>
+      
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+        {/* Verification Summary */}
         <div>
-          <div className="input-label">Relationship with Borrower</div>
-          <select className="select" style={{ width: '100%' }} value={form.guarantorRelation} onChange={e => set('guarantorRelation', e.target.value)}>
-            {['Spouse', 'Parent', 'Sibling', 'Friend', 'Business Partner', 'Other'].map(r => <option key={r}>{r}</option>)}
-          </select>
-        </div>
-      </div>
-      <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', background: 'var(--bg-elevated)', borderRadius: 10 }}>
-        <div
-          onClick={() => set('liabilityAgreementSigned', !form.liabilityAgreementSigned)}
-          style={{ width: 44, height: 24, borderRadius: 12, background: form.liabilityAgreementSigned ? '#10b981' : 'var(--bg-border)', cursor: 'pointer', position: 'relative', transition: 'background 0.2s' }}
-        >
-          <div style={{ position: 'absolute', top: 3, left: form.liabilityAgreementSigned ? 23 : 3, width: 18, height: 18, borderRadius: 9, background: 'white', transition: 'left 0.2s' }} />
-        </div>
-        <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-          Liability Agreement signed & verified by Guarantor
-        </span>
-        {form.liabilityAgreementSigned && (
-          <button className="btn btn-secondary btn-sm" style={{ marginLeft: 'auto' }}>
-            <FileText size={11} /> Preview Agreement PDF
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── Step 7: Review & Disburse ────────────────────────────────
-function Step7Review({ form, calcResult, onDisburse }: any) {
-  const [confirmed, setConfirmed] = useState(false);
-  const branchCash = 420000;
-  const canDisburse = branchCash >= calcResult.netDisbursement;
-
-  return (
-    <div>
-      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 18 }}>Step 7 — Review & Disburse</div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
-        {/* Summary */}
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Loan Summary</div>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Loan Parameters</div>
           {[
-            { label: 'Customer', val: form.selectedCustomerName || form.customerSearch },
-            { label: 'Agent', val: form.selectedAgentName },
-            { label: 'Product', val: form.product },
-            { label: 'Finance Amount', val: `₹${Number(form.financeAmount).toLocaleString()}` },
-            { label: 'Total Receivable', val: `₹${calcResult.totalReceivable.toLocaleString()}` },
-            { label: 'Net Disbursement', val: `₹${calcResult.netDisbursement.toLocaleString()}`, highlight: true },
-            { label: 'Installments', val: `${calcResult.schedule.length} × ${form.frequency}` },
-            { label: 'Start → End', val: `${form.startDate} → ${calcResult.endDate}` },
-            { label: 'Guarantor', val: form.guarantorName || '—' },
-          ].map((item, i) => (
-            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid var(--bg-border)' }}>
-              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{item.label}</span>
-              <span style={{ fontSize: 12, fontWeight: (item as any).highlight ? 800 : 600, color: (item as any).highlight ? '#34d399' : 'var(--text-primary)' }}>{item.val}</span>
+            ['Borrower', form.selectedCustomerName],
+            ['Guarantor', form.guarantorName || 'N/A'],
+            ['Principal (financeAmount)', `₹${Number(form.financeAmount).toLocaleString()}`],
+            ['Total Payable', `₹${calcResult.totalReceivable.toLocaleString()}`],
+            ['Processing Fee', `₹${calcResult.fileChargesAmount.toLocaleString()}`],
+            ['Installments count', `${form.numberOfInstallments} payments`],
+          ].map(([label, val]) => (
+            <div key={label} style={{ display: 'flex', padding: '8px 0', borderBottom: '1px solid var(--bg-border)', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{label}</span>
+              <span style={{ fontSize: 12, fontWeight: 700 }}>{val}</span>
             </div>
           ))}
         </div>
 
-        {/* Disburse Panel */}
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Disbursement Guard Check</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
-            {[
-              { label: 'Branch Cash Available', val: `₹${branchCash.toLocaleString()}`, ok: true },
-              { label: 'Net Disbursement Required', val: `₹${calcResult.netDisbursement.toLocaleString()}`, ok: canDisburse },
-              { label: 'Balance After Disburse', val: `₹${(branchCash - calcResult.netDisbursement).toLocaleString()}`, ok: canDisburse },
-              { label: 'Guarantor Signed', val: form.liabilityAgreementSigned ? 'Yes ✓' : 'No (optional)', ok: form.liabilityAgreementSigned },
-              { label: 'Schedule Validity', val: calcResult.isValid ? 'Valid ✓' : 'Invalid ✗', ok: calcResult.isValid },
-            ].map((check, i) => (
-              <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: 'var(--bg-elevated)', borderRadius: 8 }}>
-                <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{check.label}</span>
-                <span style={{ fontSize: 12, fontWeight: 700, color: check.ok ? '#34d399' : '#f87171' }}>{check.val}</span>
+        {/* Workflow actions */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14, justifyContent: 'center' }}>
+          {isAdmin ? (
+            <>
+              <div className="alert alert-info">
+                <Info size={14} />
+                <span>You have Admin permissions. You can disburse this loan case immediately.</span>
               </div>
-            ))}
-          </div>
-
-          {/* Journal Preview */}
-          <div style={{ background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 10, padding: '12px 14px', marginBottom: 14 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: '#a5b4fc', marginBottom: 8 }}>Auto Journal Entry (on Disburse)</div>
-            <div style={{ fontSize: 11, color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#f87171' }}>Dr: Loan Portfolio (Principal)</span><span>₹{calcResult.netDisbursement.toLocaleString()}</span></div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#34d399' }}>Cr: Branch Cash / Bank</span><span>₹{calcResult.netDisbursement.toLocaleString()}</span></div>
-              {calcResult.fileChargesAmount > 0 && <>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#f87171' }}>Dr: File Charges Receivable</span><span>₹{calcResult.fileChargesAmount}</span></div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#34d399' }}>Cr: Fee Income</span><span>₹{calcResult.fileChargesAmount}</span></div>
-              </>}
-            </div>
-          </div>
-
-          {!canDisburse && (
-            <div className="alert alert-danger" style={{ borderRadius: 10, marginBottom: 12, fontSize: 11 }}>
-              <Lock size={12} /> Insufficient branch cash — Disbursement blocked
-            </div>
+              <button 
+                className="btn btn-primary"
+                disabled={submitting}
+                onClick={() => onSubmit(true)}
+                style={{ width: '100%', height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+              >
+                {submitting ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+                Create & Direct Disburse
+              </button>
+              
+              <button 
+                className="btn btn-secondary"
+                disabled={submitting}
+                onClick={() => onSubmit(false)}
+                style={{ width: '100%', height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+              >
+                Create & Submit for Approval (Draft)
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="alert alert-warning">
+                <Info size={14} />
+                <span>Your application will be routed to branch managers/admins for authorization.</span>
+              </div>
+              <button 
+                className="btn btn-primary"
+                disabled={submitting}
+                onClick={() => onSubmit(false)}
+                style={{ width: '100%', height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+              >
+                {submitting ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+                Submit Case for Admin Approval
+              </button>
+            </>
           )}
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-            <div onClick={() => setConfirmed(!confirmed)} style={{ width: 20, height: 20, borderRadius: 4, background: confirmed ? '#10b981' : 'var(--bg-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
-              {confirmed && <CheckCircle2 size={13} color="white" />}
-            </div>
-            <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>I confirm all details are correct and authorize disbursement</span>
-          </div>
-
-          <button className="btn btn-primary" style={{ width: '100%' }}
-            disabled={!canDisburse || !confirmed || !calcResult.isValid}
-            onClick={onDisburse}>
-            <Lock size={14} /> 💸 Disburse Loan — ₹{calcResult.netDisbursement.toLocaleString()}
-          </button>
         </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Disburse Success Screen ──────────────────────────────────
-function DisburseSuccess({ caseId, calcResult, form, onNew }: any) {
-  return (
-    <div className="fade-in-up" style={{ maxWidth: 700, margin: '40px auto', textAlign: 'center' }}>
-      <div style={{ fontSize: 56, marginBottom: 16 }}>🎉</div>
-      <div style={{ fontSize: 24, fontWeight: 900, color: '#34d399', marginBottom: 8 }}>Loan Disbursed Successfully!</div>
-      <div style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 24 }}>Journal entry created · Schedule locked · Audit trail recorded</div>
-
-      <div className="card" style={{ textAlign: 'left', marginBottom: 20 }}>
-        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14 }}>Disbursement Receipt</div>
-        {[
-          ['Case ID', caseId],
-          ['Customer', form.selectedCustomerName || form.customerSearch],
-          ['Finance Amount', `₹${Number(form.financeAmount).toLocaleString()}`],
-          ['Net Disbursement', `₹${calcResult.netDisbursement.toLocaleString()}`],
-          ['Total Receivable', `₹${calcResult.totalReceivable.toLocaleString()}`],
-          ['Installments', `${calcResult.schedule.length} × ${form.frequency}`],
-          ['End Date', calcResult.endDate],
-          ['Disbursed At', new Date().toLocaleString('en-IN')],
-        ].map(([label, val]) => (
-          <div key={label} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid var(--bg-border)' }}>
-            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{label}</span>
-            <span style={{ fontSize: 12, fontWeight: 700 }}>{val}</span>
-          </div>
-        ))}
-      </div>
-
-      <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
-        <button className="btn btn-secondary"><Printer size={13} /> Print Receipt</button>
-        <button className="btn btn-success"><Send size={13} /> Send via WhatsApp</button>
-        <button className="btn btn-primary" onClick={onNew}><Plus size={13} /> New Case</button>
       </div>
     </div>
   );

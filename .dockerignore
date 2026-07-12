@@ -1,0 +1,9 @@
+node_modules/
+.next/
+.git/
+*.md
+build_output.txt
+verify-integration.js
+next.consfig.zip
+.env.local
+*.tsbuildinfo

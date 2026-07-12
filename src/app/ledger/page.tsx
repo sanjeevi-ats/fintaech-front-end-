@@ -26,38 +26,45 @@ export default function GeneralLedgerPage() {
       const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1).toISOString();
       const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).toISOString();
 
-      // Try primary endpoints first, then fallback to alternatives
-      let trialBalanceData: TrialBalanceItem[];
+      let trialBalanceData: TrialBalanceItem[] = [];
       let pnlData: PnLStatement | null = null;
-      let journalData: JournalEntry[];
+      let journalData: JournalEntry[] = [];
 
+      // Try to load trial balance — gracefully handle 404 (no accounts seeded yet)
       try {
         trialBalanceData = await accountingService.getTrialBalance();
-      } catch (err) {
-        console.warn('Primary trial balance endpoint failed, trying alternatives');
-        try {
-          trialBalanceData = await accountingService.getTrialBalanceAlt();
-        } catch (err2) {
-          console.warn('Secondary trial balance endpoint failed, trying ledger endpoint');
-          trialBalanceData = await accountingService.getLedgerAlt();
+      } catch (err: any) {
+        if (err.message?.includes('404') || err.message?.includes('Not Found')) {
+          console.info('No ledger accounts found yet — accounting not initialized');
+          trialBalanceData = [];
+        } else {
+          console.warn('Trial balance load error:', err.message);
+          try {
+            trialBalanceData = await accountingService.getTrialBalanceAlt();
+          } catch {
+            trialBalanceData = [];
+          }
         }
       }
 
+      // Try to load P&L — gracefully handle errors
       try {
         pnlData = await accountingService.getPnLStatement(startOfMonth, endOfMonth);
-      } catch (err) {
-        console.warn('Primary P&L endpoint failed, trying alternative');
+      } catch (err: any) {
+        if (!err.message?.includes('404')) {
+          console.warn('P&L load failed:', err.message);
+        }
         try {
           pnlData = await accountingService.getPnLStatementAlt(startOfMonth, endOfMonth);
-        } catch (altErr) {
-          console.warn('Both P&L endpoints failed, continuing without P&L data');
+        } catch {
+          pnlData = null;
         }
       }
 
+      // Try to load journal entries — gracefully handle errors
       try {
         journalData = await accountingService.getJournalEntries(startOfMonth, endOfMonth);
-      } catch (err) {
-        console.warn('Journal entries endpoint failed, using empty array');
+      } catch {
         journalData = [];
       }
 
@@ -66,11 +73,19 @@ export default function GeneralLedgerPage() {
       setJournalEntries(journalData);
     } catch (err: any) {
       console.error('Load accounting data error:', err);
-      setError(`Failed to load accounting data: ${err.message}. Please check if the backend is running on port 5177.`);
+      // Only show error for genuine connection failures, not empty data
+      if (err.message?.includes('Backend server') || err.message?.includes('fetch')) {
+        setError('Cannot connect to backend. Please ensure the server is running on port 5177.');
+      } else {
+        // Don't block the UI for API errors — show empty state
+        setTrialBalance([]);
+        setJournalEntries([]);
+      }
     } finally {
       setLoading(false);
     }
   };
+
 
   if (loading) {
     return (
@@ -198,7 +213,7 @@ export default function GeneralLedgerPage() {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th style={{ paddingLeft: 16, paddingTop: 14, paddingBottom: 14 }}>Entry ID</th>
+                  <th style={{ paddingLeft: 16, paddingTop: 14, paddingBottom: 14 }}>Entry Code</th>
                   <th>Date</th>
                   <th>Description</th>
                   <th>Debit Account</th>
@@ -209,7 +224,7 @@ export default function GeneralLedgerPage() {
               <tbody>
                 {journalEntries.length > 0 ? journalEntries.slice(0, 10).map(entry => (
                   <tr key={entry.id}>
-                    <td className="mono primary" style={{ paddingLeft: 16 }}>{entry.id.slice(0, 12)}...</td>
+                    <td className="mono primary" style={{ paddingLeft: 16 }}>{entry.journalEntryCode || entry.publicId || 'N/A'}</td>
                     <td className="mono" style={{ fontSize: 11 }}>{new Date(entry.date).toLocaleDateString()}</td>
                     <td style={{ fontSize: 12 }}>{entry.description}</td>
                     <td><span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>

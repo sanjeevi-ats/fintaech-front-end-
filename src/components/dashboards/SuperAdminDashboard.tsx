@@ -6,11 +6,21 @@ import {
 } from 'recharts';
 import {
   TrendingUp, TrendingDown, DollarSign, Users, AlertTriangle,
-  CheckCircle2, Building2, ArrowUpRight, Activity, Zap, Loader2
+  CheckCircle2, Building2, ArrowUpRight, Activity, Zap, Loader2,
+  TrendingUp as TrendUp, DollarSign as Dollar, Users as UserIcon, Clock
 } from 'lucide-react';
 import { formatCurrency, formatNumber } from '@/lib/utils';
 import { mockStats as initialMockStats, mockMonthlyPL, mockBranchPerformance } from '@/lib/mockData';
 import { reportService } from '@/services/reportService';
+import DashboardSummaryCard from '@/components/DashboardSummaryCard';
+import AnalyticsReport from '@/components/AnalyticsReport';
+import { 
+  getStatusDistribution, 
+  reportPeriods,
+  ReportPeriod,
+  CategorizedData,
+  formatReportCurrency
+} from '@/lib/reportUtils';
 
 const COLORS = ['#6366f1', '#8b5cf6', '#06b6d4', '#10b981', '#f59e0b'];
 
@@ -99,6 +109,13 @@ export default function SuperAdminDashboard() {
   const [stats, setStats] = useState<DashboardStats>(initialMockStats);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [selectedPeriod, setSelectedPeriod] = useState<ReportPeriod>(reportPeriods.thisMonth());
+  const [reportData, setReportData] = useState<CategorizedData[]>([
+    { category: 'Excellent', value: 2480, percentage: 62 },
+    { category: 'Good', value: 890, percentage: 22 },
+    { category: 'Fair', value: 380, percentage: 9 },
+    { category: 'Poor', value: 190, percentage: 5 },
+  ]);
 
   const fetchDashboardStats = useCallback(async () => {
     try {
@@ -126,6 +143,20 @@ export default function SuperAdminDashboard() {
   useEffect(() => {
     fetchDashboardStats();
   }, [fetchDashboardStats]);
+
+  const handleExportReport = (data: CategorizedData[]) => {
+    const csv = [
+      ['Category', 'Value', 'Percentage'],
+      ...data.map(d => [d.category, d.value, d.percentage])
+    ].map(row => row.join(',')).join('\n');
+    
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `report-${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+  };
 
   return (
     <div className="fade-in-up">
@@ -327,6 +358,63 @@ export default function SuperAdminDashboard() {
             </div>
           ))}
         </div>
+      </div>
+
+      {/* PHASE 9: Analytics & Reports Section */}
+      <div style={{ marginTop: 24, marginBottom: 20 }}>
+        <div style={{ marginBottom: 16 }}>
+          <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>
+            📊 Analytics & Reports
+          </h2>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            Real-time performance metrics and portfolio insights
+          </p>
+        </div>
+
+        {/* Summary Cards Row */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 20 }}>
+          <DashboardSummaryCard
+            title="Total Portfolio Value"
+            value={formatReportCurrency(stats.aum)}
+            subtitle={`${stats.activeLoans.toLocaleString()} active loans`}
+            trend={{ value: stats.aum, percentage: 12, direction: 'up' }}
+            icon={<Dollar size={20} />}
+            color="primary"
+          />
+          <DashboardSummaryCard
+            title="Collection Rate"
+            value={`${stats.collectionEfficiency}%`}
+            subtitle="Target efficiency"
+            trend={{ value: stats.collectionEfficiency, percentage: 2, direction: 'up' }}
+            icon={<TrendUp size={20} />}
+            color="success"
+          />
+          <DashboardSummaryCard
+            title="Portfolio at Risk"
+            value={`${stats.par30}%`}
+            subtitle="0-30 days overdue"
+            trend={{ value: stats.par30, percentage: 0, direction: 'neutral' }}
+            icon={<AlertTriangle size={20} />}
+            color="warning"
+          />
+          <DashboardSummaryCard
+            title="Active Branches"
+            value={mockBranchPerformance.length.toString()}
+            subtitle={`${mockBranchPerformance.filter(b => b.collection > 93).length} performing well`}
+            trend={{ value: mockBranchPerformance.length, percentage: 100, direction: 'up' }}
+            icon={<Building2 size={20} />}
+            color="info"
+          />
+        </div>
+
+        {/* Analytics Report */}
+        <AnalyticsReport
+          title="Portfolio Quality Distribution"
+          data={reportData}
+          selectedPeriod={selectedPeriod}
+          onPeriodChange={setSelectedPeriod}
+          onExport={handleExportReport}
+        />
       </div>
     </div>
   );
