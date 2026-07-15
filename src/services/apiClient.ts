@@ -1,4 +1,6 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5177';
+// Backend URL: set via NEXT_PUBLIC_API_URL env var in Vercel dashboard
+// Production: https://fintech-backend-zcg3.onrender.com
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://fintech-backend-zcg3.onrender.com';
 
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
