@@ -1,6 +1,6 @@
 // Backend URL: set via NEXT_PUBLIC_API_URL env var in Vercel dashboard
-// Production: https://fintech-backend-zcg3.onrender.com
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://fintech-backend-zcg3.onrender.com';
+// Production: https://api.rugaa.in (VPS-hosted .NET backend)
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://api.rugaa.in';
 
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
